@@ -1,7 +1,7 @@
 """Run completion gate; unexecuted independent review never becomes a pass."""
 
 from .model import validate
-from .render import check_scene
+from .scene import check_scene
 
 
 def classify(
@@ -18,7 +18,7 @@ def classify(
 
 def judge(data, scene, review):
     v = validate(data)
-    g = check_scene(scene)
+    g = check_scene(scene, data)
     st = classify(
         review.get("research_complete", False),
         True,

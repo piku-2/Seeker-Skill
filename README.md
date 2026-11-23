@@ -1,4 +1,4 @@
-# Truth Seeker v1.0
+# Truth Seeker v1.1
 
 DeepResearchを使ってめっちゃ調べて巨大な一枚のPDFを生成するスキルです。
 このスキルで作った資料は商用利用できません。
@@ -27,10 +27,9 @@ pip install reportlab pillow
 
 ## 開発・テスト（任意）
 
-Pythonエンジンの単体テストを実行する場合は以下を実行します（pytestがなくてもPython標準環境でそのまま実行可能です）：
+レイアウトの回帰テストを含むテスト一式は pytest で実行します。
 ```bash
-python tests/test_engine.py
-# または pytest をお使いの場合: pytest -q
+python -m pytest -q
 ```
 
 ## CLIサンプル
@@ -58,6 +57,16 @@ python -m truth_seeker resume runs/<run_dir>
 
 `runs/<run_dir>/render/` に `scene.json`, `map.svg`, `map.html`, PDFが有効なら `map.pdf` を生成する。PDF出力に失敗した場合はSVGを正式代替とする。強制失敗テストには `render --force-pdf-error` を使う。
 
+ノードの重要度はL1〜L4で指定でき、未指定時はL2になる。`nodes.jsonl` の各ノードに `importance` を記録するか、`render --importance <file.json>` でノードIDをキーにしたJSONを渡す。CLIで指定したレコードは描画時に優先し、判断理由と出典をシーンに記録する。歴史的重要度は主題との関係、歴史的な影響、転換点や合流点としての役割に基づいて判断する。
+
+```json
+{
+  "node_example": {"level": 4, "reason": "主題の成立を決めた転換点", "source": "research"}
+}
+```
+
+3形式は同梱のNoto Sans JP Regularを使い、共通シーンに記録した改行と座標で描画する。旧レイアウトの成果物に対して品質判定を行う場合は、先に現在の `render` で再生成する。フォントに収録されていない文字がある場合、描画前のQAが文字を報告する。同梱のフォントは Google Fonts の可変フォントからウェイト400を生成したもの。[配布元](https://github.com/google/fonts/tree/main/ofl/notosansjp)・[ライセンス](truth_seeker/fonts/OFL-NotoSansJP.txt)
+
 品質判定は構造チェックだけでは完結しない。エージェントが意味と視認性を実際に検査した後にレビューJSON（`research_complete`, `semantic_pass`, `artifact_pass`, `independent_review`）を作り、`python -m truth_seeker qa ... --review ...` で判定する。独立レビュー不在で必須QAが成功した場合のみ `complete_limited_review`。
 
 ## 修復とGit
@@ -68,7 +77,7 @@ python -m truth_seeker resume runs/<run_dir>
 
 ## 現時点の限界
 
-このv1.0は**実用コアの初期実装**。JSONL世代保存、固定のレーン分類と動的な間隔、単調な時間アンカー、ベジェ配線、SVG/HTMLとPDF生成、承認制修復のテストを含む。一方、歴史調査そのもの、意味レビュー、写真の権利確認、真の全史料網羅、巨大データでの実用性能の保証、ベジェ衝突の完全自動解決はプログラムだけでは行えない。特に重要な歴史的主張の独立検証はAIエージェント側の実運用が必要。
+v1.1では、重要度に応じたカード、文字量に応じた高さ、カードを避けるベジェ経路を共通シーンで生成する。自動QAは採用ID、年代、文字の完全性、ノード同士とエッジの衝突を検査する。歴史的主張の検証と、密集したエッジの視認性は、成果物のレビューで確認する。
 
 正式なAC-01〜AC-10の**利用ハーネスでの結合試験は別途必要**。テストが通ったからといって全ての受入条件を完了と表示しない。
 

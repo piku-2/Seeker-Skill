@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 VERSION = "0.5"
@@ -42,6 +43,28 @@ class ValidationError(ValueError):
 def ensure(cond, msg):
     if not cond:
         raise ValidationError(msg)
+
+
+class LayoutError(ValidationError):
+    def __init__(self, kind, message, **details):
+        self.issues = [
+            {"type": kind, "severity": "error", "message": message, **details}
+        ]
+        super().__init__(f"{kind}: {message}")
+
+
+def validate_importance(importance, node_id):
+    ensure(isinstance(importance, dict), f"{node_id}: importance must be an object")
+    level = importance.get("level")
+    ensure(
+        type(level) is int and 1 <= level <= 4,
+        f"{node_id}: importance level must be 1–4",
+    )
+    for key in ("reason", "source"):
+        ensure(
+            isinstance(importance.get(key), str) and bool(importance[key].strip()),
+            f"{node_id}: importance requires {key}",
+        )
 
 
 def records(path: Path):
@@ -133,11 +156,14 @@ def validate(records_by_type):
             f"{n['id']}: missing claim",
         )
         ensure(isinstance(n["display_date"], dict), f"{n['id']}: display_date")
+        if "importance" in n:
+            validate_importance(n["importance"], n["id"])
         d = n["display_date"]
         ensure(d.get("mode") in ("anchored", "unknown"), f"{n['id']}: bad display mode")
         if d["mode"] == "anchored":
             ensure(
-                isinstance(d.get("anchor_year"), (int, float)),
+                type(d.get("anchor_year")) in (int, float)
+                and math.isfinite(d["anchor_year"]),
                 f"{n['id']}: anchor_year",
             )
         for dt in n["dates"]:

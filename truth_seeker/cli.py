@@ -5,8 +5,8 @@ import json
 import sys
 from pathlib import Path
 
-from .model import ValidationError, load_generation, validate
-from .qa import classify
+from .model import LayoutError, ValidationError, load_generation, validate
+from .qa import judge
 from .render import emit, layout
 from .repair import RepairError, apply, inspect, staged_check
 from .store import (
@@ -28,7 +28,7 @@ def output(x):
 def build_parser():
     p = argparse.ArgumentParser(
         prog="truth-seeker-tool",
-        description="Truth Seeker v1.0 engine; AI agent handles research and reasoning",
+        description="Truth Seeker v1.1 engine; AI agent handles research and reasoning",
     )
     s = p.add_subparsers(dest="command", required=True)
     a = s.add_parser("init")
@@ -67,6 +67,11 @@ def build_parser():
     a = s.add_parser("render")
     a.add_argument("run")
     a.add_argument("--force-pdf-error", action="store_true")
+    a.add_argument(
+        "--importance",
+        type=Path,
+        help="Optional JSON mapping node IDs to importance records",
+    )
     a = s.add_parser("qa")
     a.add_argument("run")
     a.add_argument(
@@ -110,7 +115,12 @@ def main(argv=None):
             data = load_generation(
                 Path(args.run) / "snapshots" / progress["active_generation"]
             )
-            scene = layout(data, progress["run_id"], progress["query"])
+            importance = (
+                json.loads(args.importance.read_text(encoding="utf-8"))
+                if args.importance
+                else None
+            )
+            scene = layout(data, progress["run_id"], progress["query"], importance)
             result = emit(scene, Path(args.run) / "render", args.force_pdf_error)
             artifacts = [
                 f"render/{f}"
@@ -125,21 +135,12 @@ def main(argv=None):
             data = load_generation(
                 Path(args.run) / "snapshots" / progress["active_generation"]
             )
-            validate(data)
-            from .render import check_scene
-
             scene = json.loads(
                 (Path(args.run) / "render" / "scene.json").read_text(encoding="utf-8")
             )
-            check_scene(scene)
             review = json.loads(Path(args.review).read_text(encoding="utf-8"))
-            status = classify(
-                review.get("research_complete", False),
-                True,
-                review.get("semantic_pass", False),
-                review.get("artifact_pass", False),
-                review.get("independent_review", "not_run"),
-            )
+            qa = judge(data, scene, review)
+            status = qa["status"]
             progress["run_status"] = status
             atomic_json(Path(args.run) / "progress.json", progress)
             if (Path(args.run) / "manifest.json").exists():
@@ -147,6 +148,7 @@ def main(argv=None):
             output(
                 {
                     "status": status,
+                    "scene": qa["scene"],
                     "note": "Review flags must be supported by actual agent evidence, not invented",
                 }
             )
@@ -156,6 +158,12 @@ def main(argv=None):
             output(apply(args.root, args.proposal, args.approved))
         elif args.command == "git-check":
             output(staged_check(args.root))
+    except LayoutError as e:
+        print(
+            json.dumps({"status": "fail", "issues": e.issues}, ensure_ascii=False),
+            file=sys.stderr,
+        )
+        return 1
     except (
         ValidationError,
         RepairError,
