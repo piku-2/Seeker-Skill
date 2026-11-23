@@ -167,14 +167,44 @@ def test_generation_recovery(tmp_path):
     gen = commit_generation(base, sample())
     assert gen == "g000001"
     assert latest_good(base) == gen
-    task = add_task(base, "背景調査")
-    update_task(base, task["task_id"], "running")
+    retry_task = add_task(base, "背景調査")
+    update_task(base, retry_task["task_id"], "running")
+    completed_task = add_task(base, "初期資料確認")
+    update_task(base, completed_task["task_id"], "completed")
     progress = resume(base)
-    assert progress["tasks"][0]["status"] == "retryable"
+    by_id = {task["task_id"]: task["status"] for task in progress["tasks"]}
+    assert by_id[retry_task["task_id"]] == "retryable"
+    assert by_id[completed_task["task_id"]] == "completed"
+    assert read_manifest(base)["status"] == "paused"
     assert progress["active_generation"] == gen
     (base / "snapshots" / gen / "nodes.jsonl").write_text("broken\n")
     assert latest_good(base) == "g000000"
     assert resume(base)["active_generation"] == "g000000"
+
+
+def test_resume_cli_reclaims_task_without_creating_run(tmp_path):
+    base = create_run(tmp_path, "再開テスト")
+    task = add_task(base, "再試行する調査")
+    update_task(base, task["task_id"], "running")
+    existing_dirs = set(tmp_path.iterdir())
+
+    result = subprocess.run(
+        [sys.executable, "-m", "truth_seeker", "resume", str(base)],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    progress = read_progress(base)
+    resumed_task = next(
+        item for item in progress["tasks"] if item["task_id"] == task["task_id"]
+    )
+    assert resumed_task["status"] == "retryable"
+    assert progress["run_status"] == "paused"
+    assert read_manifest(base)["status"] == "paused"
+    assert '"run_status": "paused"' in result.stdout
+    assert set(tmp_path.iterdir()) == existing_dirs
 
 
 def test_concurrent_task_add(tmp_path):
