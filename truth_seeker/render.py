@@ -40,6 +40,31 @@ def _source_url(ref):
     )
 
 
+def _edge_tooltip(edge):
+    label = edge["label"] or edge["relation_type"]
+    if "importance" in edge:
+        reason = edge["importance"]["reason"]
+        label += f"（L{edge['importance']['level']}・{reason}）"
+    return label
+
+
+def _background_bands(scene):
+    if scene["layout_revision"] == 2:
+        top = scene["lane_top"]
+        for lane in scene["lane_definitions"]:
+            yield lane["x"], top, lane["width"] - 4, scene["sources_y"] - top
+    else:
+        anchors = [y for _, y in scene["time_axis"]["anchors"]]
+        anchors.extend((scene["time_axis"]["unknown_y"], scene["sources_y"] - 26))
+        for i in range(0, len(anchors) - 1, 2):
+            yield (
+                96,
+                anchors[i],
+                scene["canvas_width"] - 131,
+                anchors[i + 1] - anchors[i],
+            )
+
+
 def render_svg(scene):
     w, h = scene["canvas_width"], scene["canvas_height"]
     grid = scene["styles"]["grid"]
@@ -55,10 +80,9 @@ def render_svg(scene):
         "</defs>",
         f'<rect width="100%" height="100%" fill="{background}"/><rect width="100%" height="100%" fill="url(#grid)"/>',
     ]
-    top = scene["lane_top"]
-    for lane in scene["lane_definitions"]:
+    for x, y, width, height in _background_bands(scene):
         parts.append(
-            f'<rect x="{lane["x"]}" y="{top}" width="{lane["width"] - 4}" height="{scene["sources_y"] - top}" rx="12" fill="#FFFFFF" fill-opacity="0.23"/>'
+            f'<rect x="{x}" y="{y}" width="{width}" height="{height}" fill="#FFFFFF" fill-opacity="0.42"/>'
         )
     for _, y in scene["time_axis"]["anchors"]:
         parts.append(
@@ -79,7 +103,7 @@ def render_svg(scene):
         parts.append(
             f'<g data-edge-id="{html.escape(edge["edge_id"])}" data-source-id="{html.escape(edge["source_node_id"])}" '
             f'data-target-id="{html.escape(edge["target_node_id"])}">'
-            f"<title>{html.escape(edge['label'] or edge['relation_type'])}</title>"
+            f"<title>{html.escape(_edge_tooltip(edge))}</title>"
             f'<path d="{path}" fill="none" stroke="{style["stroke"]}" stroke-width="{style["width"]}"{dash}/>'
             f'<polygon points="{_svg_points(edge["arrow"])}" fill="{style["stroke"]}"/></g>'
         )
@@ -108,10 +132,14 @@ def render_svg(scene):
             parts.append("</a>")
     for asset in scene.get("assets", []):
         parts.append(f'<g data-asset-id="{html.escape(asset["id"])}">')
+        if asset.get("caption"):
+            parts.append(f"<title>{html.escape(asset['caption'])}</title>")
         if "bbox" in asset:
             x, y, w, h = asset["bbox"]
-            parts.append(f'<image x="{x}" y="{y}" width="{w}" height="{h}" '
-                         f'href="data:{asset["mime"]};base64,{asset["image_data"]}"/>')
+            parts.append(
+                f'<image x="{x}" y="{y}" width="{w}" height="{h}" '
+                f'href="data:{asset["mime"]};base64,{asset["image_data"]}"/>'
+            )
         for line in asset["text_lines"]:
             text = svg_text(line)
             if line.get("source_url", "").startswith(("https://", "http://")):
@@ -204,14 +232,10 @@ def render_pdf(scene, path):
     for y in range(0, math.ceil(h), 20):
         c.line(0, y, w, y)
 
-    top = scene["lane_top"]
     c.saveState()
-    c.setFillColorRGB(1, 1, 1, alpha=0.23)
-    for lane in scene["lane_definitions"]:
-        bottom = scene["sources_y"]
-        c.roundRect(
-            lane["x"], h - bottom, lane["width"] - 4, bottom - top, 12, fill=1, stroke=0
-        )
+    c.setFillColorRGB(1, 1, 1, alpha=0.42)
+    for x, y, width, height in _background_bands(scene):
+        c.rect(x, h - y - height, width, height, fill=1, stroke=0)
     c.restoreState()
     c.setStrokeColor(HexColor("#A7BBC4"))
     c.setLineWidth(0.8)
@@ -296,14 +320,22 @@ def _check_svg(scene, svg, html_document):
                 edge_id=eid,
             )
     groups = root.findall(f"{SVG_NS}g[@data-asset-id]")
-    if [g.get("data-asset-id") for g in groups] != [a["id"] for a in scene.get("assets", [])]:
+    if [g.get("data-asset-id") for g in groups] != [
+        a["id"] for a in scene.get("assets", [])
+    ]:
         raise ValueError("SVG asset IDs differ from scene")
     for group, asset in zip(groups, scene.get("assets", [])):
         image = group.find(f"{SVG_NS}image")
         if "bbox" in asset:
-            if image is None or image.get("href") != f'data:{asset["mime"]};base64,{asset["image_data"]}':
+            if (
+                image is None
+                or image.get("href")
+                != f"data:{asset['mime']};base64,{asset['image_data']}"
+            ):
                 raise ValueError("SVG image differs from scene")
-            if [float(image.get(v)) for v in ("x", "y", "width", "height")] != asset["bbox"]:
+            if [float(image.get(v)) for v in ("x", "y", "width", "height")] != asset[
+                "bbox"
+            ]:
                 raise ValueError("SVG image bounds differ from scene")
     expected = [line["text"] for line in all_text_lines(scene)]
     # SVG groups place text in paint order, which differs from the PDF text layer.
@@ -337,7 +369,9 @@ def _check_pdf(scene, output):
         def close_rect(actual, expected):
             return max(abs(a - b) for a, b in zip(actual, expected)) < 0.03
 
-        if not close_rect(page.rect, page_rect((0, 0, scene["canvas_width"], scene["canvas_height"]))):
+        if not close_rect(
+            page.rect, page_rect((0, 0, scene["canvas_width"], scene["canvas_height"]))
+        ):
             raise ValueError("PDF page bounds differ from scene")
         links = [(link.get("uri"), link["from"]) for link in page.get_links()]
         expected_links = [(url, page_rect(box)) for url, box in _link_areas(scene)]
@@ -348,7 +382,9 @@ def _check_pdf(scene, output):
             raise ValueError("PDF source link URL or rectangle differs from scene")
         boxes = [page_rect(a["bbox"]) for a in scene.get("assets", []) if "bbox" in a]
         images = page.get_image_info()
-        if len(boxes) != len(images) or any(not close_rect(im["bbox"], box) for im, box in zip(images, boxes)):
+        if len(boxes) != len(images) or any(
+            not close_rect(im["bbox"], box) for im, box in zip(images, boxes)
+        ):
             raise ValueError("PDF image bounds differ from scene")
         # Extract glyph origins instead of clipping against renderer-specific ascenders.
         baselines = defaultdict(list)
@@ -397,7 +433,9 @@ def emit(scene, out_dir, force_pdf_error=False):
     html_path.write_text(html_document, encoding="utf-8")
     reason, pdf_check = None, None
     scale = _pdf_scale(scene)
-    minimum = min(line["size"] for line in all_text_lines(scene) if line["text"]) * scale
+    minimum = (
+        min(line["size"] for line in all_text_lines(scene) if line["text"]) * scale
+    )
     warning = None
     try:
         if force_pdf_error:

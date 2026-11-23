@@ -202,6 +202,8 @@ def validate(records_by_type):
             e["source_id"] in nodes and e["target_id"] in nodes,
             f"{e['id']}: dangling endpoint",
         )
+        if "importance" in e:
+            validate_importance(e["importance"], e["id"])
         ensure(e["relation_type"] in RELATIONS, f"{e['id']}: relation")
         ensure(e["adoption_status"] in ADOPTIONS, f"{e['id']}: adoption")
         ensure(set(e["claim_ids"]) <= set(claims), f"{e['id']}: missing claim")
@@ -274,6 +276,48 @@ def validate(records_by_type):
         )
     for m in data["merge_history"]:
         required(m, ["from_id", "to_id", "reason", "generation"], "merge_history")
+    for asset in data["assets"]:
+        kind = asset.get("asset_type")
+        if kind in ("photo", "primary_document", "diagram", "chart"):
+            key = asset["id"]
+            owners = asset.get("related_node_ids", [])
+            ensure(
+                isinstance(owners, list)
+                and all(isinstance(owner, str) and owner in nodes for owner in owners)
+                and ("node_id" not in asset or asset["node_id"] in nodes),
+                f"{key}: missing illustration node",
+            )
+            refs = asset.get("evidence_ids", [])
+            ensure(
+                isinstance(refs, list)
+                and all(isinstance(ref, str) and ref in evidence for ref in refs),
+                f"{key}: missing illustration evidence",
+            )
+            ensure(
+                any(
+                    isinstance(asset.get(field), str)
+                    and asset[field].startswith(("https://", "http://"))
+                    for field in ("source_page_url", "source_url")
+                )
+                or any(
+                    isinstance(evidence[eid].get("source_url"), str)
+                    and evidence[eid]["source_url"].startswith(("https://", "http://"))
+                    for eid in refs
+                ),
+                f"{key}: illustration requires an identifiable source",
+            )
+            ensure(
+                any(
+                    isinstance(asset.get(field), str) and asset[field].strip()
+                    for field in ("rights_note", "license")
+                ),
+                f"{key}: illustration requires rights metadata",
+            )
+            ensure(
+                isinstance(asset.get("caption") or asset.get("title"), str)
+                and bool((asset.get("caption") or asset.get("title")).strip()),
+                f"{key}: illustration requires a caption",
+            )
     return {
         "counts": {k: len(v) for k, v in data.items()},
         "adopted_node_ids": sorted(

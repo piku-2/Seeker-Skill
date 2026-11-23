@@ -52,7 +52,7 @@ uv run pytest -v
 
 `runs/<run_dir>/render/` に `scene.json`, `map.svg`, `map.html`, PDFが有効なら `map.pdf` を生成する。PDF出力に失敗した場合はSVGを正式代替とする。強制失敗テストには `render --force-pdf-error` を使う。
 
-ノードの重要度はL1〜L4で指定でき、未指定時はL2になる。`nodes.jsonl` の各ノードに `importance` を記録するか、`render --importance <file.json>` でノードIDをキーにしたJSONを渡す。CLIで指定したレコードは描画時に優先し、判断理由と出典をシーンに記録する。歴史的重要度は主題との関係、歴史的な影響、転換点や合流点としての役割に基づいて判断する。
+ノードとエッジの重要度はそれぞれL1〜L4で指定でき、未指定時はL2になる。`nodes.jsonl` または `edges.jsonl` の各レコードに `importance` を記録するか、`render --importance <file.json>` でノードID・エッジIDをキーにしたJSONを渡す。CLIで指定したレコードは描画時に優先し、判断理由と出典をシーンに記録する。歴史的重要度は主題との関係、歴史的な影響、転換点や合流点としての役割に基づいて判断する。
 
 ```json
 {
@@ -60,8 +60,17 @@ uv run pytest -v
     "level": 4,
     "reason": "主題の成立を決めた転換点",
     "source": "research"
+  },
+  "edge_example": {
+    "level": 3,
+    "reason": "後続機の設計を可能にした技術的依存",
+    "source": "research"
   }
 }
 ```
+
+同じ年代のカードを年代帯の中で横に展開し、接続先の近さと関係の重要度で配置を調整する。エッジの色は関係種別、線種は根拠の確実性、太さは重要度に対応する。
+
+写真・一次史料・模式図・データグラフは `assets.jsonl` に登録できる。関連ノードに図版と出典の領域を確保してから配線する。登録項目は[データ契約](references/data-contract.md)を参照。
 
 3形式は同梱のNoto Sans JP Regularを使い、共通シーンに記録した改行と座標で描画する。旧レイアウトの成果物に対して品質判定を行う場合は、先に現在の `render` で再生成する。フォントに収録されていない文字がある場合、描画前のQAが文字を報告する。同梱のフォントは Google Fonts の可変フォントからウェイト400を生成したもの。[配布元](https://github.com/google/fonts/tree/main/ofl/notosansjp)・[ライセンス](truth_seeker/fonts/OFL-NotoSansJP.txt)

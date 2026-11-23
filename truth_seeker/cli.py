@@ -70,7 +70,7 @@ def build_parser():
     a.add_argument(
         "--importance",
         type=Path,
-        help="Optional JSON mapping node IDs to importance records",
+        help="Optional JSON mapping node or edge IDs to importance records",
     )
     a = s.add_parser("qa")
     a.add_argument("run")
@@ -120,7 +120,13 @@ def main(argv=None):
                 if args.importance
                 else None
             )
-            scene = layout(data, progress["run_id"], progress["query"], importance, run_dir=args.run)
+            scene = layout(
+                data,
+                progress["run_id"],
+                progress["query"],
+                importance,
+                run_dir=args.run,
+            )
             result = emit(scene, Path(args.run) / "render", args.force_pdf_error)
             artifacts = [
                 f"render/{f}"
