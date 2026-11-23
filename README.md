@@ -35,6 +35,7 @@ $resume-truth-seeker
 
 ```bash
 uv sync
+uv run pytest -v
 ```
 
 `pyproject.toml` に定義された依存パッケージをインストールし、仮想環境を準備します。
