@@ -1,9 +1,11 @@
 """Generation-based durable graph snapshots and resumable task state."""
 from pathlib import Path
-from datetime import datetime,timezone
+from datetime import datetime, timezone, timedelta
 from uuid import uuid4
-import json, os, shutil, hashlib
+import json, os, shutil, hashlib, re
 from .model import FILES,load_generation,validate,dump_records,ValidationError
+
+JST = timezone(timedelta(hours=9))
 
 def atomic_json(path, data):
     path=Path(path); path.parent.mkdir(parents=True,exist_ok=True)
@@ -15,14 +17,53 @@ def atomic_json(path, data):
 
 def utcnow(): return datetime.now(timezone.utc).isoformat()
 
-def create_run(root,query,run_id=None):
-    run_id=run_id or ('run_'+uuid4().hex[:12]); base=Path(root)/run_id
+def sanitize_folder_theme(query, max_len=30):
+    if not query: return 'topic'
+    cleaned = re.sub(r'[\r\n\t]+', ' ', str(query)).strip()
+    cleaned = re.sub(r'[\x00-\x1f\x7f\\/:*?"<>|！？：＊？＜＞｜／＼]', '_', cleaned)
+    cleaned = re.sub(r'[\s\u3000]+', '_', cleaned)
+    cleaned = re.sub(r'_+', '_', cleaned).strip('._ ')
+    shortened = cleaned[:max_len].rstrip('._ ')
+    return shortened or 'topic'
+
+def generate_run_folder_name(query, dt=None, suffix_id=None):
+    if dt is None:
+        dt = datetime.now(JST)
+    elif dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc).astimezone(JST)
+    else:
+        dt = dt.astimezone(JST)
+    ts = dt.strftime('%Y%m%d_%H%M')
+    theme = sanitize_folder_theme(query, max_len=30)
+    rand = suffix_id or uuid4().hex[:6]
+    return f"{ts}_{theme}_{rand}"
+
+def read_manifest(base):
+    path = Path(base) / 'manifest.json'
+    if path.exists():
+        try: return json.loads(path.read_text(encoding='utf-8'))
+        except Exception: return None
+    return None
+
+def update_manifest(base, **fields):
+    base = Path(base)
+    mf = read_manifest(base) or {}
+    mf.update(fields)
+    mf['updated_at'] = utcnow()
+    atomic_json(base / 'manifest.json', mf)
+    return mf
+
+def create_run(root,query,run_id=None,folder_name=None):
+    run_id=run_id or ('run_'+uuid4().hex[:12])
+    folder_name=folder_name or generate_run_folder_name(query)
+    base=Path(root)/folder_name
     if base.exists(): raise FileExistsError(base)
     (base/'snapshots').mkdir(parents=True)
     for d in ('staging','render','qa'): (base/d).mkdir()
-    initial={'schema_version':'0.5','run_id':run_id,'query':query,'run_status':'paused','active_generation':'g000000','tasks':[],'frontier_task_ids':[],'completed_task_ids':[],'blocked_task_ids':[],'last_successful_phase':'initialized','checkpoint_at':utcnow()}
+    now=utcnow()
+    initial={'schema_version':'0.5','run_id':run_id,'query':query,'run_status':'paused','active_generation':'g000000','tasks':[],'frontier_task_ids':[],'completed_task_ids':[],'blocked_task_ids':[],'last_successful_phase':'initialized','checkpoint_at':now}
     commit_generation(base,{k:[] for k in FILES}, progress=initial)
-    atomic_json(base/'manifest.json',{'run_id':run_id,'query':query,'created_at':utcnow(),'artifacts':[],'status':'paused'})
+    atomic_json(base/'manifest.json',{'run_id':run_id,'query':query,'folder_name':folder_name,'created_at':now,'updated_at':now,'artifacts':[],'status':'paused'})
     return base
 
 def read_progress(base): return json.loads((Path(base)/'progress.json').read_text(encoding='utf-8'))
@@ -41,6 +82,7 @@ def commit_generation(base,data,progress=None):
     pr=dict(progress or old or {})
     pr['active_generation']=gen;pr['checkpoint_at']=utcnow()
     atomic_json(base/'progress.json',pr)
+    if (base/'manifest.json').exists(): update_manifest(base)
     return gen
 
 def verify_generation(base,gen):
@@ -64,6 +106,7 @@ def resume(base):
     for t in pr.get('tasks',[]):
         if t.get('status')=='running': t['status']='retryable';t['last_error']='Interrupted; reclaimed on resume'
     pr['run_status']='paused';atomic_json(base/'progress.json',pr)
+    if (base/'manifest.json').exists(): update_manifest(base, status='paused')
     return pr
 
 def add_task(base,topic,priority=0,parent_task_id=None):
@@ -72,6 +115,7 @@ def add_task(base,topic,priority=0,parent_task_id=None):
     tid='task_'+uuid4().hex[:12]
     task=dict(task_id=tid,run_id=pr['run_id'],topic=topic,parent_task_id=parent_task_id,priority=priority,status='pending',attempts=0,assigned_worker=None,input_refs=[],output_refs=[],discovered_task_ids=[],last_error=None,updated_at=utcnow())
     pr['tasks'].append(task);pr['frontier_task_ids'].append(tid);atomic_json(Path(base)/'progress.json',pr)
+    if (Path(base)/'manifest.json').exists(): update_manifest(base)
     return task
 
 def update_task(base,task_id,status,**extra):
@@ -86,4 +130,5 @@ def update_task(base,task_id,status,**extra):
     if status=='completed': pr['completed_task_ids'].append(task_id)
     if status=='blocked': pr['blocked_task_ids'].append(task_id)
     atomic_json(Path(base)/'progress.json',pr)
+    if (Path(base)/'manifest.json').exists(): update_manifest(base)
     return t

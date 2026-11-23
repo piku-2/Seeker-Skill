@@ -2,9 +2,23 @@ from pathlib import Path
 import json
 import subprocess
 import sys
-import pytest
+try:
+    import pytest
+except ImportError:
+    class _PytestMock:
+        class raises:
+            def __init__(self, expected_exception):
+                self.expected = expected_exception
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                if exc_type is None:
+                    raise AssertionError(f"Expected {self.expected.__name__} but no exception was raised")
+                return issubclass(exc_type, self.expected)
+    pytest = _PytestMock()
+
 from truth_seeker.model import validate,ValidationError,provenance,FILES,dump_records,load_generation
-from truth_seeker.store import create_run,commit_generation,latest_good,resume,add_task,update_task,read_progress
+from truth_seeker.store import create_run,commit_generation,latest_good,resume,add_task,update_task,read_progress,read_manifest,update_manifest,sanitize_folder_theme,generate_run_folder_name
 from truth_seeker.render import layout,emit,check_scene
 from truth_seeker.qa import classify
 from truth_seeker.repair import proposal,apply,RepairError
@@ -129,3 +143,101 @@ def test_git_protection(tmp_path):
     subprocess.run(['git','add','secret.txt'],cwd=repo,check=True)
     result=staged_check(repo)
     assert not result['safe'] and 'secret.txt' in str(result['problems'])
+
+
+def test_sanitize_folder_theme():
+    assert sanitize_folder_theme('囲碁') == '囲碁'
+    assert sanitize_folder_theme('囲碁の歴史: 起源から現代まで？') == '囲碁の歴史_起源から現代まで'
+    assert sanitize_folder_theme('a' * 50) == 'a' * 30
+    assert sanitize_folder_theme('Windows\\Linux/Forbidden:*?"<>|Chars') == 'Windows_Linux_Forbidden_Chars'
+    assert sanitize_folder_theme('   ') == 'topic'
+    assert sanitize_folder_theme('???:::***') == 'topic'
+    # 末尾の区切り文字トリム
+    assert sanitize_folder_theme('テスト_テーマ_') == 'テスト_テーマ'
+
+
+def test_run_folder_naming_and_manifest(tmp_path):
+    long_query = '囲碁の歴史と発展: 古代中国の起源から現代AIの登場までを徹底調査する！'
+    base = create_run(tmp_path, long_query)
+    folder_name = base.name
+    
+    # 命名規則: YYYYMMDD_HHMM_テーマ_ID
+    parts = folder_name.split('_')
+    assert len(parts) >= 4, f"unexpected folder name structure: {folder_name}"
+    # YYYYMMDD
+    assert len(parts[0]) == 8 and parts[0].isdigit()
+    # HHMM
+    assert len(parts[1]) == 4 and parts[1].isdigit()
+    # ID: 6 hex
+    suffix_id = parts[-1]
+    assert len(suffix_id) == 6
+    # テーマ部分
+    theme_part = '_'.join(parts[2:-1])
+    assert '囲碁' in theme_part
+    assert len(theme_part) <= 30
+    # 禁止文字が除外されていること
+    assert ':' not in folder_name and '!' not in folder_name and '？' not in folder_name
+
+    # manifest.json の検証
+    manifest = read_manifest(base)
+    assert manifest is not None
+    assert manifest['query'] == long_query  # 全文が保持されること
+    assert manifest['folder_name'] == folder_name
+    assert 'created_at' in manifest and 'updated_at' in manifest
+    assert manifest['run_id'].startswith('run_')  # 独立した内部ID
+    
+    # progress.json との整合性
+    progress = read_progress(base)
+    assert progress['run_id'] == manifest['run_id']
+    assert progress['query'] == long_query
+
+    # タスク追加や更新でフォルダ名は不変、manifest.json は更新される
+    orig_name = base.name
+    t1 = add_task(base, '起源の深掘り')
+    assert base.name == orig_name
+    m_after_task = read_manifest(base)
+    assert m_after_task['updated_at'] >= manifest['updated_at']
+
+    # 再開してもフォルダ名やIDは保持される
+    res = resume(base)
+    assert res['run_id'] == manifest['run_id']
+    assert base.name == orig_name
+
+
+def test_legacy_run_folder_compatibility(tmp_path):
+    # 既存の run_xxx 形式フォルダを直接指定して作成・利用できること
+    legacy_base = create_run(tmp_path, 'レガシー調査', run_id='run_old12345678', folder_name='run_old12345678')
+    assert legacy_base.name == 'run_old12345678'
+    assert read_progress(legacy_base)['run_id'] == 'run_old12345678'
+    
+    # タスク追加や世代コミットも正常に動くこと
+    task = add_task(legacy_base, 'レガシータスク')
+    assert task['run_id'] == 'run_old12345678'
+    gen = commit_generation(legacy_base, sample('run_old12345678'))
+    assert gen == 'g000001'
+
+
+if __name__ == '__main__':
+    import tempfile, inspect
+    passed = 0
+    failed = 0
+    module = sys.modules[__name__]
+    for name, func in inspect.getmembers(module, inspect.isfunction):
+        if name.startswith('test_'):
+            sig = inspect.signature(func)
+            try:
+                if 'tmp_path' in sig.parameters:
+                    with tempfile.TemporaryDirectory() as td:
+                        func(Path(td))
+                else:
+                    func()
+                print(f"PASS: {name}")
+                passed += 1
+            except Exception as e:
+                print(f"FAIL: {name}: {e}")
+                import traceback
+                traceback.print_exc()
+                failed += 1
+    print(f"\n{passed} passed, {failed} failed")
+    if failed:
+        sys.exit(1)

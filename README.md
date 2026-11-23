@@ -3,43 +3,60 @@
 DeepResearchを使ってめっちゃ調べて巨大な一枚のPDFを生成するスキルです。
 このスキルで作った資料は商用利用できません。
 
-## 必要環境
+## クイックスタート
 
-- Python 3.10以上
-- Pythonライブラリ `reportlab`, `Pillow`（PDFの検査に `pymupdf` を使用するが任意）
-- Web検索・資料確認に対応したAIエージェント。サブエージェントが使える環境を推奨
-- `.agents/skills` を認識する対応ハーネス。
-
-```bash
-python -m venv .venv
-python -m pip install -e .
-python -m pip install pytest     # テスト用（任意）
-python -m pytest -q
-```
-
-## AIエージェントで使う
-
-クローンしたリポジトリをAIエージェントで開き、以下を実行する。
+クローンしたリポジトリをAIエージェントで開き、以下を実行するだけです。
 
 ```text
 /truth-seeker "検索ワード"
 ```
 
-ハーネスでスラッシュ呼び出しがない場合、対象の `SKILL.md` を参照させて同じ目的のタスクを指示する。AIエージェントがWeb検索、史料の読み取り、裏付けと異説の検証を担い、Pythonエンジンはデータ契約・チェックポイント・描画を担う。
+スラッシュ呼び出しに対応していない環境の場合は、`.agents/skills/truth-seeker/SKILL.md` を参照させて「〇〇についてTruth Seekerで歴史知識マップを作成して」と指示してください。AIエージェントがWeb検索、史料の読み取り、裏付けと異説の検証を担い、Pythonエンジンはデータ契約・チェックポイント・描画を担います。
+
+## 必要環境
+
+- Python 3.10以上
+- Pythonライブラリ: `reportlab`, `Pillow`（※PDF検査用の `pymupdf` は任意）
+- Web検索・資料確認に対応したAIエージェント（サブエージェント利用推奨）
+
+※依存ライブラリが未インストールの環境のみ以下を実行してください：
+```bash
+pip install reportlab pillow
+# または uv をお使いの場合: uv pip install reportlab pillow
+```
+
+## 開発・テスト（任意）
+
+Pythonエンジンの単体テストを実行する場合は以下を実行します（pytestがなくてもPython標準環境でそのまま実行可能です）：
+```bash
+python tests/test_engine.py
+# または pytest をお使いの場合: pytest -q
+```
 
 ## CLIサンプル
 
 ```bash
 python -m truth_seeker init "囲碁"
-python -m truth_seeker task-add runs/<run_id> "囲碁の起源"
-python -m truth_seeker status runs/<run_id>
+# runs/20261123_1040_囲碁_a1b2c3/ のような実行フォルダが作成されます
+python -m truth_seeker task-add runs/<run_dir> "囲碁の起源"
+python -m truth_seeker status runs/<run_dir>
 python -m truth_seeker validate <complete-staging-generation>
-python -m truth_seeker merge runs/<run_id> <complete-staging-generation>
-python -m truth_seeker render runs/<run_id>
-python -m truth_seeker resume runs/<run_id>
+python -m truth_seeker merge runs/<run_dir> <complete-staging-generation>
+python -m truth_seeker render runs/<run_dir>
+python -m truth_seeker resume runs/<run_dir>
 ```
 
-`runs/<run_id>/render/` に `scene.json`, `map.svg`, `map.html`, PDFが有効なら `map.pdf` を生成する。PDF出力に失敗した場合はSVGを正式代替とする。強制失敗テストには `render --force-pdf-error` を使う。
+### 実行フォルダの命名規則
+
+実行フォルダは **`YYYYMMDD_HHMM_テーマ_ID`** （例: `runs/20261123_1040_囲碁_a1b2c3/`）の形式で作成されます。
+
+- **日時**: 調査開始日時（JST 日本時間）
+- **テーマ**: 検索クエリ（日本語対応、Windows/Linux禁止文字置換、最大30文字）
+- **ID**: 同名・同時刻衝突防止用ランダムID (6文字)
+- **検索テーマの全文**および**調査開始日時 (`created_at`) / 最終更新日時 (`updated_at`)** はフォルダ内の `manifest.json` に安全に保持されます。
+- 内部ID（`run_id`）は従来どおり独立して保持され、既存の `run_xxxxx` フォルダとの完全な後方互換性があります。
+
+`runs/<run_dir>/render/` に `scene.json`, `map.svg`, `map.html`, PDFが有効なら `map.pdf` を生成する。PDF出力に失敗した場合はSVGを正式代替とする。強制失敗テストには `render --force-pdf-error` を使う。
 
 品質判定は構造チェックだけでは完結しない。エージェントが意味と視認性を実際に検査した後にレビューJSON（`research_complete`, `semantic_pass`, `artifact_pass`, `independent_review`）を作り、`python -m truth_seeker qa ... --review ...` で判定する。独立レビュー不在で必須QAが成功した場合のみ `complete_limited_review`。
 

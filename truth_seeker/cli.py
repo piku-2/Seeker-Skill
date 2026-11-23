@@ -3,7 +3,7 @@ import argparse,json,sys
 from pathlib import Path
 from . import __version__
 from .model import load_generation,validate,ValidationError
-from .store import create_run,read_progress,commit_generation,add_task,update_task,resume,latest_good,atomic_json
+from .store import create_run,read_progress,commit_generation,add_task,update_task,resume,latest_good,atomic_json,read_manifest,update_manifest
 from .render import layout,emit
 from .repair import inspect,apply,staged_check,RepairError
 from .qa import classify
@@ -44,7 +44,10 @@ def main(argv=None):
             progress=read_progress(args.run)
             data=load_generation(Path(args.run)/'snapshots'/progress['active_generation'])
             scene=layout(data,progress['run_id'],progress['query'])
-            result=emit(scene,Path(args.run)/'render',args.force_pdf_error);output(result)
+            result=emit(scene,Path(args.run)/'render',args.force_pdf_error)
+            artifacts=[f'render/{f}' for f in ('scene.json','map.svg','map.html','map.pdf') if (Path(args.run)/'render'/f).exists()]
+            if (Path(args.run)/'manifest.json').exists(): update_manifest(args.run, artifacts=artifacts)
+            output(result)
         elif args.command=='qa':
             progress=read_progress(args.run); data=load_generation(Path(args.run)/'snapshots'/progress['active_generation']);validate(data)
             from .render import check_scene
@@ -52,6 +55,7 @@ def main(argv=None):
             review=json.loads(Path(args.review).read_text(encoding='utf-8'))
             status=classify(review.get('research_complete',False),True,review.get('semantic_pass',False),review.get('artifact_pass',False),review.get('independent_review','not_run'))
             progress['run_status']=status;atomic_json(Path(args.run)/'progress.json',progress)
+            if (Path(args.run)/'manifest.json').exists(): update_manifest(args.run, status=status)
             output({'status':status,'note':'Review flags must be supported by actual agent evidence, not invented'})
         elif args.command=='repair-show':output(inspect('.',args.proposal))
         elif args.command=='repair-apply':output(apply(args.root,args.proposal,args.approved))
