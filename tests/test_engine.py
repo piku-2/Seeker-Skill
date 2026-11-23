@@ -1,4 +1,5 @@
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 import json
 import subprocess
 import sys
@@ -80,6 +81,17 @@ def test_generation_recovery(tmp_path):
     assert latest_good(base)=='g000000'
     assert resume(base)['active_generation']=='g000000'
 
+
+def test_concurrent_task_add(tmp_path):
+    base=create_run(tmp_path,'並行タスクテスト')
+    def add(i):
+        return add_task(base,f'並行タスク{i}')
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results=list(pool.map(add,range(8)))
+    progress=read_progress(base)
+    assert len(results)==8
+    assert len(progress['tasks'])==8
+    assert len(progress['frontier_task_ids'])==8
 
 def test_atomic_generation_invalid_data(tmp_path):
     base=create_run(tmp_path,'sample');d=sample();d['edges'][0]['source_id']='node_missing'

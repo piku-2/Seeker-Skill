@@ -3,6 +3,8 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 import json, os, shutil, hashlib, re
+from contextlib import contextmanager
+import fcntl
 from .model import FILES,load_generation,validate,dump_records,ValidationError
 
 JST = timezone(timedelta(hours=9))
@@ -16,6 +18,18 @@ def atomic_json(path, data):
     os.replace(tmp,path)
 
 def utcnow(): return datetime.now(timezone.utc).isoformat()
+
+@contextmanager
+def progress_lock(base):
+    base=Path(base)
+    base.mkdir(parents=True,exist_ok=True)
+    lock_path=base/'.progress.lock'
+    with lock_path.open('a+b') as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 def sanitize_folder_theme(query, max_len=30):
     if not query: return 'topic'
@@ -69,21 +83,23 @@ def create_run(root,query,run_id=None,folder_name=None):
 def read_progress(base): return json.loads((Path(base)/'progress.json').read_text(encoding='utf-8'))
 
 def commit_generation(base,data,progress=None):
-    base=Path(base);check=validate(data)
-    old=read_progress(base) if (base/'progress.json').exists() else None
-    number=(int(old['active_generation'][1:])+1 if old else 0)
-    gen=f'g{number:06d}';tmp=base/'snapshots'/('_'+gen+'_'+uuid4().hex)
-    tmp.mkdir(parents=True,exist_ok=False)
-    for name in FILES: dump_records(tmp/(name+'.jsonl'),data.get(name,[]))
-    digest={name:hashlib.sha256((tmp/(name+'.jsonl')).read_bytes()).hexdigest() for name in FILES}
-    atomic_json(tmp/'index.json',{'generation':gen,'sha256':digest,'counts':check['counts']})
-    validate(load_generation(tmp))
-    dst=base/'snapshots'/gen; os.replace(tmp,dst)
-    pr=dict(progress or old or {})
-    pr['active_generation']=gen;pr['checkpoint_at']=utcnow()
-    atomic_json(base/'progress.json',pr)
-    if (base/'manifest.json').exists(): update_manifest(base)
-    return gen
+    base=Path(base)
+    with progress_lock(base):
+        check=validate(data)
+        old=read_progress(base) if (base/'progress.json').exists() else None
+        number=(int(old['active_generation'][1:])+1 if old else 0)
+        gen=f'g{number:06d}';tmp=base/'snapshots'/('_'+gen+'_'+uuid4().hex)
+        tmp.mkdir(parents=True,exist_ok=False)
+        for name in FILES: dump_records(tmp/(name+'.jsonl'),data.get(name,[]))
+        digest={name:hashlib.sha256((tmp/(name+'.jsonl')).read_bytes()).hexdigest() for name in FILES}
+        atomic_json(tmp/'index.json',{'generation':gen,'sha256':digest,'counts':check['counts']})
+        validate(load_generation(tmp))
+        dst=base/'snapshots'/gen; os.replace(tmp,dst)
+        pr=dict(progress or old or {})
+        pr['active_generation']=gen;pr['checkpoint_at']=utcnow()
+        atomic_json(base/'progress.json',pr)
+        if (base/'manifest.json').exists(): update_manifest(base)
+        return gen
 
 def verify_generation(base,gen):
     root=Path(base)/'snapshots'/gen
@@ -100,35 +116,41 @@ def latest_good(base):
     raise ValidationError('no valid snapshot')
 
 def resume(base):
-    base=Path(base); pr=read_progress(base)
-    try: verify_generation(base,pr['active_generation'])
-    except (ValidationError,FileNotFoundError,ValueError,KeyError): pr['active_generation']=latest_good(base)
-    for t in pr.get('tasks',[]):
-        if t.get('status')=='running': t['status']='retryable';t['last_error']='Interrupted; reclaimed on resume'
-    pr['run_status']='paused';atomic_json(base/'progress.json',pr)
-    if (base/'manifest.json').exists(): update_manifest(base, status='paused')
-    return pr
+    base=Path(base)
+    with progress_lock(base):
+        pr=read_progress(base)
+        try: verify_generation(base,pr['active_generation'])
+        except (ValidationError,FileNotFoundError,ValueError,KeyError): pr['active_generation']=latest_good(base)
+        for t in pr.get('tasks',[]):
+            if t.get('status')=='running': t['status']='retryable';t['last_error']='Interrupted; reclaimed on resume'
+        pr['run_status']='paused';atomic_json(base/'progress.json',pr)
+        if (base/'manifest.json').exists(): update_manifest(base, status='paused')
+        return pr
 
 def add_task(base,topic,priority=0,parent_task_id=None):
-    pr=read_progress(base)
-    if any(t['topic']==topic and t['status']!='superseded' for t in pr['tasks']): return False
-    tid='task_'+uuid4().hex[:12]
-    task=dict(task_id=tid,run_id=pr['run_id'],topic=topic,parent_task_id=parent_task_id,priority=priority,status='pending',attempts=0,assigned_worker=None,input_refs=[],output_refs=[],discovered_task_ids=[],last_error=None,updated_at=utcnow())
-    pr['tasks'].append(task);pr['frontier_task_ids'].append(tid);atomic_json(Path(base)/'progress.json',pr)
-    if (Path(base)/'manifest.json').exists(): update_manifest(base)
-    return task
+    base=Path(base)
+    with progress_lock(base):
+        pr=read_progress(base)
+        if any(t['topic']==topic and t['status']!='superseded' for t in pr['tasks']): return False
+        tid='task_'+uuid4().hex[:12]
+        task=dict(task_id=tid,run_id=pr['run_id'],topic=topic,parent_task_id=parent_task_id,priority=priority,status='pending',attempts=0,assigned_worker=None,input_refs=[],output_refs=[],discovered_task_ids=[],last_error=None,updated_at=utcnow())
+        pr['tasks'].append(task);pr['frontier_task_ids'].append(tid);atomic_json(base/'progress.json',pr)
+        if (base/'manifest.json').exists(): update_manifest(base)
+        return task
 
 def update_task(base,task_id,status,**extra):
-    pr=read_progress(base)
-    matched=[t for t in pr['tasks'] if t['task_id']==task_id]
-    if len(matched)!=1: raise ValueError('unknown task')
-    t=matched[0]; t.update(extra);t['status']=status;t['updated_at']=utcnow()
-    pr['frontier_task_ids']=[x for x in pr['frontier_task_ids'] if x!=task_id]
-    pr['completed_task_ids']=[x for x in pr['completed_task_ids'] if x!=task_id]
-    pr['blocked_task_ids']=[x for x in pr['blocked_task_ids'] if x!=task_id]
-    if status in ('pending','retryable'): pr['frontier_task_ids'].append(task_id)
-    if status=='completed': pr['completed_task_ids'].append(task_id)
-    if status=='blocked': pr['blocked_task_ids'].append(task_id)
-    atomic_json(Path(base)/'progress.json',pr)
-    if (Path(base)/'manifest.json').exists(): update_manifest(base)
-    return t
+    base=Path(base)
+    with progress_lock(base):
+        pr=read_progress(base)
+        matched=[t for t in pr['tasks'] if t['task_id']==task_id]
+        if len(matched)!=1: raise ValueError('unknown task')
+        t=matched[0]; t.update(extra);t['status']=status;t['updated_at']=utcnow()
+        pr['frontier_task_ids']=[x for x in pr['frontier_task_ids'] if x!=task_id]
+        pr['completed_task_ids']=[x for x in pr['completed_task_ids'] if x!=task_id]
+        pr['blocked_task_ids']=[x for x in pr['blocked_task_ids'] if x!=task_id]
+        if status in ('pending','retryable'): pr['frontier_task_ids'].append(task_id)
+        if status=='completed': pr['completed_task_ids'].append(task_id)
+        if status=='blocked': pr['blocked_task_ids'].append(task_id)
+        atomic_json(base/'progress.json',pr)
+        if (base/'manifest.json').exists(): update_manifest(base)
+        return t
