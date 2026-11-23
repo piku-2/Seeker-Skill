@@ -278,7 +278,7 @@ def validate(records_by_type):
         required(m, ["from_id", "to_id", "reason", "generation"], "merge_history")
     for asset in data["assets"]:
         kind = asset.get("asset_type")
-        if kind in ("photo", "primary_document", "diagram", "chart"):
+        if kind in ("photo", "primary_document", "diagram", "map", "chart"):
             key = asset["id"]
             owners = asset.get("related_node_ids", [])
             ensure(

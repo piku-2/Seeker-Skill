@@ -14,10 +14,13 @@ from .store import (
     atomic_json,
     commit_generation,
     create_run,
+    progress_lock,
     read_progress,
     resume,
+    save_illustrations,
     update_manifest,
     update_task,
+    verify_generation,
 )
 
 
@@ -52,6 +55,15 @@ def build_parser():
             "superseded",
         ),
     )
+    a = s.add_parser(
+        "illustrations-save",
+        help="Checkpoint the illustration search in the current run",
+    )
+    a.add_argument("run")
+    a.add_argument("report", type=Path)
+    a.add_argument(
+        "--complete", action="store_true", help="Finalize against the active generation"
+    )
     a = s.add_parser("status")
     a.add_argument("run")
     a = s.add_parser("resume")
@@ -77,7 +89,7 @@ def build_parser():
     a.add_argument(
         "--review",
         required=True,
-        help="JSON file with research_complete, semantic_pass, artifact_pass, independent_review",
+        help="Review JSON including generation and illustration_review (see data contract)",
     )
     a = s.add_parser("repair-show")
     a.add_argument("proposal")
@@ -94,12 +106,15 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         if args.command == "init":
-            run = create_run(args.runs, args.topic)
+            run = create_run(args.runs, args.topic, plan_illustrations=True)
             output({"run": str(run), "status": "paused"})
         elif args.command == "task-add":
             output(add_task(args.run, args.topic, args.priority))
         elif args.command == "task-update":
             output(update_task(args.run, args.task_id, args.status))
+        elif args.command == "illustrations-save":
+            report = json.loads(args.report.read_text(encoding="utf-8"))
+            output(save_illustrations(args.run, report, complete=args.complete))
         elif args.command == "status":
             output(read_progress(args.run))
         elif args.command == "resume":
@@ -127,6 +142,7 @@ def main(argv=None):
                 importance,
                 run_dir=args.run,
             )
+            scene["graph_generation"] = progress["active_generation"]
             result = emit(scene, Path(args.run) / "render", args.force_pdf_error)
             artifacts = [
                 f"render/{f}"
@@ -137,27 +153,39 @@ def main(argv=None):
                 update_manifest(args.run, artifacts=artifacts)
             output(result)
         elif args.command == "qa":
-            progress = read_progress(args.run)
-            data = load_generation(
-                Path(args.run) / "snapshots" / progress["active_generation"]
-            )
-            scene = json.loads(
-                (Path(args.run) / "render" / "scene.json").read_text(encoding="utf-8")
-            )
-            review = json.loads(Path(args.review).read_text(encoding="utf-8"))
-            qa = judge(data, scene, review)
-            status = qa["status"]
-            progress["run_status"] = status
-            atomic_json(Path(args.run) / "progress.json", progress)
-            if (Path(args.run) / "manifest.json").exists():
-                update_manifest(args.run, status=status)
-            output(
-                {
+            with progress_lock(args.run):
+                progress = read_progress(args.run)
+                generation = progress["active_generation"]
+                verify_generation(args.run, generation)
+                data = load_generation(Path(args.run) / "snapshots" / generation)
+                scene = json.loads(
+                    (Path(args.run) / "render" / "scene.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                review = json.loads(Path(args.review).read_text(encoding="utf-8"))
+                qa = judge(data, scene, review, progress=progress, run_dir=args.run)
+                status = qa["status"]
+                paused = progress["run_status"] == "paused" and any(
+                    task["status"] in ("pending", "running", "retryable", "blocked")
+                    for task in progress["tasks"]
+                )
+                progress["run_status"] = (
+                    "paused" if paused and status == "incomplete" else status
+                )
+                atomic_json(Path(args.run) / "progress.json", progress)
+                if (Path(args.run) / "manifest.json").exists():
+                    update_manifest(args.run, status=progress["run_status"])
+                result = {
                     "status": status,
+                    "run_status": progress["run_status"],
+                    "generation": generation,
                     "scene": qa["scene"],
+                    "illustrations": qa["illustrations"],
                     "note": "Review flags must be supported by actual agent evidence, not invented",
                 }
-            )
+                atomic_json(Path(args.run) / "qa" / "illustration-result.json", result)
+            output(result)
         elif args.command == "repair-show":
             output(inspect(".", args.proposal))
         elif args.command == "repair-apply":

@@ -71,6 +71,6 @@ uv run pytest -v -rs
 
 同じ年代のカードを年代帯の中で横に展開し、接続先の近さと関係の重要度で配置を調整する。エッジの色は関係種別、線種は根拠の確実性、太さは重要度に対応する。
 
-写真・一次史料・模式図・データグラフは `assets.jsonl` に登録できる。関連ノードに図版と出典の領域を確保してから配線する。登録項目は[データ契約](references/data-contract.md)を参照。
+写真・一次史料・模式図・地図・データグラフは `assets.jsonl` に登録できる。関連ノードに図版と出典の領域を確保してから配線する。調査と並行して同じrunの図版探索タスクを進め、`illustrations-save` で検索・権利・採否を記録する。未探索のままQAを完了できない。探索して0件だった場合は理由を記録する。手順とレビュー形式は[データ契約](references/data-contract.md#illustration-search-and-visual-review)を参照。
 
 3形式は同梱のNoto Sans JP Regularを使い、共通シーンに記録した改行と座標で描画する。旧レイアウトの成果物に対して品質判定を行う場合は、先に現在の `render` で再生成する。フォントに収録されていない文字がある場合、描画前のQAが文字を報告する。同梱のフォントは Google Fonts の可変フォントからウェイト400を生成したもの。[配布元](https://github.com/google/fonts/tree/main/ofl/notosansjp)・[ライセンス](truth_seeker/fonts/OFL-NotoSansJP.txt)

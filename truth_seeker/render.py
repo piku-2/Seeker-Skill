@@ -324,6 +324,10 @@ def _check_svg(scene, svg, html_document):
         a["id"] for a in scene.get("assets", [])
     ]:
         raise ValueError("SVG asset IDs differ from scene")
+    if len(list(root.iter(f"{SVG_NS}image"))) != sum(
+        "bbox" in asset for asset in scene.get("assets", [])
+    ):
+        raise ValueError("SVG image count differs from scene")
     for group, asset in zip(groups, scene.get("assets", [])):
         image = group.find(f"{SVG_NS}image")
         if "bbox" in asset:
@@ -333,10 +337,17 @@ def _check_svg(scene, svg, html_document):
                 != f"data:{asset['mime']};base64,{asset['image_data']}"
             ):
                 raise ValueError("SVG image differs from scene")
-            if [float(image.get(v)) for v in ("x", "y", "width", "height")] != asset[
-                "bbox"
-            ]:
+            if [
+                float(image.get(v, "nan")) for v in ("x", "y", "width", "height")
+            ] != asset["bbox"]:
                 raise ValueError("SVG image bounds differ from scene")
+        expected_links = [
+            line["source_url"]
+            for line in asset["text_lines"]
+            if line.get("source_url", "").startswith(("https://", "http://"))
+        ]
+        if [link.get("href") for link in group.findall(f"{SVG_NS}a")] != expected_links:
+            raise ValueError("SVG illustration source links differ from scene")
     expected = [line["text"] for line in all_text_lines(scene)]
     # SVG groups place text in paint order, which differs from the PDF text layer.
     actual = [line.text or "" for line in root.iter(f"{SVG_NS}text")]
@@ -414,6 +425,31 @@ def _check_pdf(scene, output):
                     f"PDF text differs from the drawing scene at {line['role']} ({line['x']:.1f}, {line['y']:.1f})"
                 )
     return "page_and_text"
+
+
+def check_saved_artifacts(scene, out_dir):
+    """Check files on disk against the current, already-validated scene."""
+    out_dir = Path(out_dir)
+    result = json.loads((out_dir / "render_result.json").read_text(encoding="utf-8"))
+    if not isinstance(result, dict):
+        raise ValueError("invalid render result")
+    _check_svg(
+        scene,
+        (out_dir / "map.svg").read_text(encoding="utf-8"),
+        (out_dir / "map.html").read_text(encoding="utf-8"),
+    )
+    pdf = out_dir / "map.pdf"
+    primary = result.get("primary_format")
+    if primary not in ("pdf", "svg") or (
+        primary == "svg" and not result.get("pdf_fallback_reason")
+    ):
+        raise ValueError("invalid primary format or undocumented PDF fallback")
+    formats = ["svg", "html"]
+    if pdf.is_file() or primary == "pdf":
+        _check_pdf(scene, pdf)
+        formats.append("pdf")
+    count = sum("bbox" in asset for asset in scene.get("assets", []))
+    return {name: count for name in formats}
 
 
 def emit(scene, out_dir, force_pdf_error=False):

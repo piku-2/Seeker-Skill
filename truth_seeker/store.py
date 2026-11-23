@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from .illustrations import TASK_KIND, TASK_TOPIC, validate_search
 from .model import FILES, ValidationError, dump_records, load_generation, validate
 
 JST = timezone(timedelta(hours=9))
@@ -86,7 +87,7 @@ def update_manifest(base, **fields):
     return mf
 
 
-def create_run(root, query, run_id=None, folder_name=None):
+def create_run(root, query, run_id=None, folder_name=None, *, plan_illustrations=False):
     run_id = run_id or ("run_" + uuid4().hex[:12])
     folder_name = folder_name or generate_run_folder_name(query)
     base = Path(root) / folder_name
@@ -109,6 +110,8 @@ def create_run(root, query, run_id=None, folder_name=None):
         "last_successful_phase": "initialized",
         "checkpoint_at": now,
     }
+    if plan_illustrations:
+        _ensure_illustration_task(initial)
     commit_generation(base, {k: [] for k in FILES}, progress=initial)
     atomic_json(
         base / "manifest.json",
@@ -183,6 +186,63 @@ def latest_good(base):
     raise ValidationError("no valid snapshot")
 
 
+def illustration_task(progress):
+    return next(
+        (task for task in progress["tasks"] if task.get("kind") == TASK_KIND), None
+    )
+
+
+def _new_task(progress, topic, priority=0, parent_task_id=None):
+    task = dict(
+        task_id="task_" + uuid4().hex[:12],
+        run_id=progress["run_id"],
+        topic=topic,
+        parent_task_id=parent_task_id,
+        priority=priority,
+        status="pending",
+        attempts=0,
+        assigned_worker=None,
+        input_refs=[],
+        output_refs=[],
+        discovered_task_ids=[],
+        last_error=None,
+        updated_at=utcnow(),
+    )
+    progress["tasks"].append(task)
+    progress["frontier_task_ids"].append(task["task_id"])
+    return task
+
+
+def _ensure_illustration_task(progress):
+    task = illustration_task(progress)
+    if task is None:
+        task = _new_task(progress, TASK_TOPIC)
+        task["kind"] = TASK_KIND
+    return task
+
+
+def save_illustrations(base, report, complete=False):
+    """Checkpoint a draft or finalize it against the active graph."""
+    if not isinstance(report, dict):
+        raise ValidationError("illustrations: expected a JSON object")
+    base = Path(base)
+    with progress_lock(base):
+        progress = read_progress(base)
+        task = _ensure_illustration_task(progress)
+        generation = progress["active_generation"]
+        if complete:
+            verify_generation(base, generation)
+            validate_search(report, load_generation(base / "snapshots" / generation))
+        task["illustration_report"] = report
+        task["illustration_generation"] = generation if complete else None
+        status = "completed" if complete else "running"
+        _set_task_status(progress, task, status)
+        atomic_json(base / "progress.json", progress)
+        if (base / "manifest.json").exists():
+            update_manifest(base)
+        return task
+
+
 def resume(base):
     base = Path(base)
     with progress_lock(base):
@@ -191,10 +251,19 @@ def resume(base):
             verify_generation(base, pr["active_generation"])
         except (ValidationError, FileNotFoundError, ValueError, KeyError):
             pr["active_generation"] = latest_good(base)
+        illustrations = _ensure_illustration_task(pr)
         for t in pr.get("tasks", []):
             if t.get("status") == "running":
-                t["status"] = "retryable"
+                _set_task_status(pr, t, "retryable")
                 t["last_error"] = "Interrupted; reclaimed on resume"
+        if (
+            illustrations["status"] == "completed"
+            and illustrations.get("illustration_generation") != pr["active_generation"]
+        ):
+            _set_task_status(pr, illustrations, "retryable")
+            illustrations["last_error"] = (
+                "Active generation changed; recheck the illustration report"
+            )
         pr["run_status"] = "paused"
         atomic_json(base / "progress.json", pr)
         if (base / "manifest.json").exists():
@@ -210,24 +279,7 @@ def add_task(base, topic, priority=0, parent_task_id=None):
             t["topic"] == topic and t["status"] != "superseded" for t in pr["tasks"]
         ):
             return False
-        tid = "task_" + uuid4().hex[:12]
-        task = dict(
-            task_id=tid,
-            run_id=pr["run_id"],
-            topic=topic,
-            parent_task_id=parent_task_id,
-            priority=priority,
-            status="pending",
-            attempts=0,
-            assigned_worker=None,
-            input_refs=[],
-            output_refs=[],
-            discovered_task_ids=[],
-            last_error=None,
-            updated_at=utcnow(),
-        )
-        pr["tasks"].append(task)
-        pr["frontier_task_ids"].append(tid)
+        task = _new_task(pr, topic, priority, parent_task_id)
         atomic_json(base / "progress.json", pr)
         if (base / "manifest.json").exists():
             update_manifest(base)
@@ -243,18 +295,27 @@ def update_task(base, task_id, status, **extra):
             raise ValueError("unknown task")
         t = matched[0]
         t.update(extra)
-        t["status"] = status
-        t["updated_at"] = utcnow()
-        pr["frontier_task_ids"] = [x for x in pr["frontier_task_ids"] if x != task_id]
-        pr["completed_task_ids"] = [x for x in pr["completed_task_ids"] if x != task_id]
-        pr["blocked_task_ids"] = [x for x in pr["blocked_task_ids"] if x != task_id]
-        if status in ("pending", "retryable"):
-            pr["frontier_task_ids"].append(task_id)
-        if status == "completed":
-            pr["completed_task_ids"].append(task_id)
-        if status == "blocked":
-            pr["blocked_task_ids"].append(task_id)
+        if t.get("kind") == TASK_KIND and status == "completed":
+            raise ValidationError(
+                "finalize illustration searches with illustrations-save --complete"
+            )
+        _set_task_status(pr, t, status)
         atomic_json(base / "progress.json", pr)
         if (base / "manifest.json").exists():
             update_manifest(base)
         return t
+
+
+def _set_task_status(progress, task, status):
+    task["status"] = status
+    task["updated_at"] = utcnow()
+    task_id = task["task_id"]
+    destinations = {
+        "frontier_task_ids": ("pending", "retryable"),
+        "completed_task_ids": ("completed",),
+        "blocked_task_ids": ("blocked",),
+    }
+    for field, statuses in destinations.items():
+        progress[field] = [value for value in progress[field] if value != task_id]
+        if status in statuses:
+            progress[field].append(task_id)
