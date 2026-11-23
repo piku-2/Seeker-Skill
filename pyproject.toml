@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "truth-seeker"
+version = "1.0.0"
+description = "Personal evidence-based history map and skill repair agent tooling"
+requires-python = ">=3.10"
+dependencies = ["reportlab>=3.6", "Pillow>=9"]
+[project.optional-dependencies]
+test = ["pytest>=7"]
+[project.scripts]
+truth-seeker-tool = "truth_seeker.cli:main"
+[tool.setuptools.packages.find]
+include = ["truth_seeker*"]
