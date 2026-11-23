@@ -1,15 +1,17 @@
 # Truth Seeker v1.0
 
-自分専用の歴史知識グラフ研究・巨大地図生成ツール。Agent Skillsは **`truth-seeker` と `skill-repair` の2つだけ**。GitHubへ生成物・取得素材・ローカル研究データを載せない。
+DeepResearchを使ってめっちゃ調べて巨大な一枚のPDFを生成するスキルです。
+このスキルで作った資料は商用利用できません。
 
 ## 必要環境
 
 - Python 3.10以上
-- Pythonライブラリ `reportlab`, `Pillow`（PDFの検査に `pymupdf` は任意）
+- Pythonライブラリ `reportlab`, `Pillow`（PDFの検査に `pymupdf` を使用するが任意）
 - Web検索・資料確認に対応したAIエージェント。サブエージェントが使える環境を推奨
-- `.agents/skills` を認識する対応ハーネス。認識場所が異なる場合は利用するハーネスの仕様に応じ配置する
+- `.agents/skills` を認識する対応ハーネス。
 
 ```bash
+python -m venv .venv
 python -m pip install -e .
 python -m pip install pytest     # テスト用（任意）
 python -m pytest -q
@@ -20,11 +22,10 @@ python -m pytest -q
 クローンしたリポジトリをAIエージェントで開き、以下を実行する。
 
 ```text
-/truth-seeker 囲碁
-/skill-repair
+/truth-seeker "検索ワード"
 ```
 
-ハーネスでスラッシュ呼び出しがない場合、対象の `SKILL.md` を参照させて同じ目的のタスクを指示する。**`truth-seeker-tool` 自体はWebの歴史調査を実行しない**。AIエージェントがWeb検索、史料の読み取り、裏付けと異説の検証を担い、Pythonエンジンはデータ契約・チェックポイント・描画を担う。
+ハーネスでスラッシュ呼び出しがない場合、対象の `SKILL.md` を参照させて同じ目的のタスクを指示する。AIエージェントがWeb検索、史料の読み取り、裏付けと異説の検証を担い、Pythonエンジンはデータ契約・チェックポイント・描画を担う。
 
 ## CLIサンプル
 
