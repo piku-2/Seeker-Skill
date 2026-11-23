@@ -1,0 +1,8 @@
++Modified map font, 2026-11-23.
++
++The file NotoSansJP-Regular.ttf in this directory is a modified font.
++Its name table identifies it as Truth Seeker Map, not as an unmodified Noto or Source release.
++Eight glyphs were added from Noto Sans Regular (Copyright 2022 The Noto Project Authors, SIL OFL 1.1):
++U+A723, U+A725, U+2070, U+2075, U+2076, U+2077, U+2078, U+2079.
++The unmodified Noto Sans JP file used as the base is kept in repair_backups for this repair.
++Reserved Font Name in the notice below: Source. This derivative does not use that name.
