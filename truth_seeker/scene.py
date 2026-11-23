@@ -1,8 +1,15 @@
 """Build and validate the common Truth Seeker drawing scene."""
 
+import base64
+import hashlib
+import io
+import json
 import math
 from collections import defaultdict
 from itertools import chain, pairwise
+from pathlib import Path
+
+from PIL import Image
 
 from .model import LayoutError, ensure, validate, validate_importance
 from .routing import (
@@ -135,7 +142,109 @@ def _arrow(end):
     ]
 
 
-def layout(data, run_id="run_manual", title="歴史知識地図", importance=None):
+def _saved_figure(run_dir, record):
+    """Recover an embedded-only figure before the CLI replaces its old render."""
+    import pymupdf
+
+    previous = run_dir / "render"
+    scene = json.loads((previous / "scene.json").read_text())
+    for asset in scene.get("assets", []):
+        if asset.get("record") == record and asset.get("image_data"):
+            return base64.b64decode(asset["image_data"], validate=True)
+    figure = scene.get("figure", {})
+    if (figure.get("asset_id"), figure.get("node_id")) != (record["id"], record.get("node_id")):
+        raise ValueError(f"{record['id']}: embedded figure not found")
+    with pymupdf.open(previous / "map.pdf") as doc:
+        page = doc[0]
+        scale = page.rect.height / scene["canvas_height"]
+        if len(doc) != 1 or abs(page.rect.width - scene["canvas_width"] * scale) > .05:
+            raise ValueError("saved figure and PDF dimensions disagree")
+        rect = pymupdf.Rect(*(v * scale for v in padded(figure["bbox"], 0)))
+        if rect.is_empty or not page.rect.contains(rect):
+            raise ValueError("invalid saved figure bounds")
+        return page.get_pixmap(clip=rect, matrix=pymupdf.Matrix(3, 3)).tobytes("png")
+
+
+def _asset_image(record, run_dir):
+    if record.get("asset_type") == "external_reference":
+        return None
+    if run_dir is None:
+        raise ValueError(f"{record['id']}: run directory required for registered image")
+    root = Path(run_dir).resolve()
+    if record.get("local_path"):
+        path = (root / record["local_path"]).resolve()
+        if not path.is_relative_to(root):
+            raise ValueError(f"{record['id']}: asset outside run")
+        raw = path.read_bytes()
+        if record.get("sha256") and hashlib.sha256(raw).hexdigest() != record["sha256"]:
+            raise ValueError(f"{record['id']}: image checksum differs")
+    else:
+        raw = _saved_figure(root, record)
+    with Image.open(io.BytesIO(raw)) as image:
+        image.load()
+        if image.format not in {"JPEG", "PNG"}:
+            buffer = io.BytesIO()
+            image.convert("RGBA").save(buffer, format="PNG")
+            raw = buffer.getvalue()
+            mime = "image/png"
+        else:
+            mime = Image.MIME[image.format]
+        return raw, mime, image.size
+
+
+def _place_assets(scene, data, run_dir):
+    # Append a dedicated illustration area below the graph and bibliography.
+    nodes = {n["node_id"]: n for n in scene["nodes"]}
+    evidence = {e["id"]: e for e in data.get("evidence", [])}
+    cursor = scene["canvas_height"]
+    scene["asset_layout_version"] = 1
+    scene["assets"] = []
+    for record in data.get("assets", []):
+        ids = list(record.get("related_node_ids", []))
+        if record.get("node_id") and record["node_id"] not in ids:
+            ids.append(record["node_id"])
+        owners = [nodes[k] for k in ids if k in nodes]
+        if ids and not owners:
+            continue
+        asset = {"id": record["id"], "record": record, "text_lines": []}
+        scene["assets"].append(asset)
+        for owner in owners:
+            owner["asset_refs"].append(record["id"])
+        try:
+            image = _asset_image(record, run_dir)
+        except (OSError, ValueError, KeyError, ImportError) as exc:
+            raise LayoutError("asset_image", f"{record['id']}: {exc}") from exc
+        if image:
+            raw, mime, (width, height) = image
+            factor = min(360 / width, 240 / height)
+            asset.update(image_data=base64.b64encode(raw).decode("ascii"), mime=mime,
+                         bbox=[44, cursor, width * factor, height * factor])
+            cursor += height * factor + 9
+        urls = [record.get("source_page_url"), record.get("source_url")]
+        urls.extend(evidence[k]["source_url"] for k in record.get("evidence_ids", []) if k in evidence)
+        asset["source_urls"] = list(dict.fromkeys(url for url in urls if url))
+        credit = [
+            record.get("caption") or record.get("title"),
+            "・".join(n["label"] for n in owners),
+            record.get("creator"),
+            record.get("license"),
+            record.get("rights_note"),
+        ]
+        caption = "　".join(filter(None, credit))
+        asset["text_lines"] = text_lines(caption or record["id"], 44, cursor,
+                                         scene["canvas_width"] - 88, 9, "#243747", "asset_caption")
+        for url in asset["source_urls"]:
+            source_lines = text_lines(url, 44, _end(asset["text_lines"]) + 4,
+                                      scene["canvas_width"] - 88, 9, "#325d92", "asset_source")
+            for line in source_lines:
+                line["source_url"] = url
+            asset["text_lines"].extend(source_lines)
+        cursor = _end(asset["text_lines"]) + 25
+    if scene["assets"]:
+        scene["canvas_height"] = cursor + 20
+
+
+def layout(data, run_id="run_manual", title="歴史知識地図", importance=None, *, run_dir=None):
     checked = validate(data)
     nodes = [n for n in data.get("nodes", []) if n["adoption_status"] == "adopted"]
     edges = [e for e in data.get("edges", []) if e["adoption_status"] == "adopted"]
@@ -363,6 +472,7 @@ def layout(data, run_id="run_manual", title="歴史知識地図", importance=Non
         "layout_revision": 2,
         "styles": {"background": "#FCFBF8", "grid": "#DBE8E9"},
     }
+    _place_assets(out, data, run_dir)
     check_scene(out, data)
     return out
 
@@ -374,6 +484,7 @@ def all_text_lines(scene):
         *(node["text_lines"] for node in scene["nodes"]),
         scene["sources_heading"],
         *(ref["text_lines"] for ref in scene["sources"]),
+        *(asset.get("text_lines", []) for asset in scene.get("assets", [])),
     )
 
 
@@ -696,6 +807,37 @@ def check_scene(scene, data=None):
             f"{ref['evidence_id']}: truncated source",
             evidence_id=ref["evidence_id"],
         )
+    if scene.get("asset_layout_version") == 1:
+        assets = scene["assets"]
+        if data is not None:
+            registered = {}
+            for record in data.get("assets", []):
+                owners = set(record.get("related_node_ids", []))
+                if record.get("node_id"):
+                    owners.add(record["node_id"])
+                if not owners or owners.intersection(nodes):
+                    registered[record["id"]] = record
+            _require({a["id"]: a["record"] for a in assets} == registered
+                     and len(assets) == len(registered), "asset_ids", "registered assets differ from scene")
+        bottom = max([scene["sources_y"]] + [
+            line["bbox"][1] + line["bbox"][3] for ref in refs for line in ref["text_lines"]
+        ] + [line["bbox"][1] + line["bbox"][3] for line in scene["sources_heading"]])
+        for asset in assets:
+            record = asset["record"]
+            owners = set(record.get("related_node_ids", [])) | {record.get("node_id")}
+            _require({k for k, n in nodes.items() if asset["id"] in n["asset_refs"]}
+                     == owners.intersection(nodes), "asset_owner", "incorrect asset owner")
+            boxes = []
+            if record.get("asset_type") != "external_reference":
+                _require(bool(asset.get("image_data")) and "bbox" in asset,
+                         "asset_image", "missing registered illustration")
+                boxes.append(asset["bbox"])
+            boxes.extend(line["bbox"] for line in asset["text_lines"])
+            for box in boxes:
+                _require(box[1] >= bottom and min(box[2:]) > 0 and _inside(padded(box, 0), canvas),
+                         "asset_bounds", "illustration or caption outside reserved area")
+                bottom = box[1] + box[3]
+
     glyphs = set()
     for line in all_text_lines(scene):
         _require(

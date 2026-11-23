@@ -297,3 +297,148 @@ def test_existing_rust_map(tmp_path):
     for card in scene["nodes"]:
         assert_card_text(card)
     assert emit(scene, tmp_path)["primary_format"] == "pdf"
+
+
+@pytest.mark.parametrize("axis,extent,primary", [
+    ("canvas_height", 17500, "pdf"),
+    ("canvas_width", 17500, "pdf"),
+    ("canvas_height", 28000, "svg"),
+])
+def test_pdf_scales_geometry_text_and_links(tmp_path, axis, extent, primary):
+    import pymupdf
+
+    data = sample()
+    data["evidence"][0]["source_url"] = "https://example.org/scaling"
+    scene = layout(data)
+    scene[axis] = extent
+    result = emit(scene, tmp_path)
+    scale = 14000 / extent
+    assert result["pdf_scale"] == pytest.approx(scale)
+    assert result["pdf_min_text_pt"] == pytest.approx(8.5 * scale)
+    assert result["primary_format"] == primary
+    assert bool(result["pdf_warning"]) == (primary == "svg")
+    with pymupdf.open(tmp_path / "map.pdf") as doc:
+        page = doc[0]
+        assert len(doc) == 1 and max(page.rect.width, page.rect.height) == 14000
+        for link, line in zip(page.get_links(), scene["sources"][0]["text_lines"], strict=True):
+            x, y, w, h = line["bbox"]
+            assert tuple(link["from"]) == pytest.approx(
+                [v * scale for v in (x, y, x+w, y+h)], abs=.02)
+        drawings = page.get_drawings()
+        edge = scene["edges"][0]
+        path = next(d for d in drawings if any(item[0] == "c" for item in d["items"])
+                    and d["width"] == pytest.approx(edge["style"]["width"] * scale))
+        assert tuple(path["items"][0][1]) == pytest.approx(
+            [v * scale for v in edge["path"][0]], abs=.02)
+        arrow = next(d for d in drawings if d["type"] == "f" and d["fill"] == pytest.approx((112/255,131/255,152/255)))
+        assert tuple(arrow["items"][0][1]) == pytest.approx(
+            [v * scale for v in edge["arrow"][0]], abs=.02)
+        assert scene["nodes"][0]["label"] in page.get_text()
+
+
+def test_pdf_verification_detects_moved_link_and_missing_text(tmp_path):
+    import pymupdf
+    from truth_seeker.render import _check_pdf, render_pdf
+
+    data = sample()
+    data["evidence"][0]["source_url"] = "https://example.org/scaling"
+    scene = layout(data)
+    scene["canvas_height"] = 16500
+    pdf = tmp_path / "map.pdf"
+    render_pdf(scene, pdf)
+    with pymupdf.open(pdf) as doc:
+        page = doc[0]
+        link = page.get_links()[0]
+        link["from"] = pymupdf.Rect(10, 10, 20, 20)
+        page.update_link(link)
+        doc.saveIncr()
+    with pytest.raises(ValueError, match="link"):
+        _check_pdf(scene, pdf)
+    render_pdf(scene, pdf)
+    with pymupdf.open(pdf) as doc:
+        page = doc[0]
+        rect = page.search_for(scene["title"])[0]
+        page.add_redact_annot(rect)
+        page.apply_redactions()
+        doc.saveIncr()
+    with pytest.raises(ValueError, match="text differs"):
+        _check_pdf(scene, pdf)
+
+
+def test_registered_illustration_visibility_credit_and_placement(tmp_path):
+    import base64
+    import io
+    import pymupdf
+    from PIL import Image
+
+    data = sample()
+    image = Image.new("RGB", (30, 20), "#d51c56")
+    image.save(tmp_path / "plate.png")
+    asset = dict(id="asset_plate", schema_version="0.5", local_path="plate.png",
+                 related_node_ids=["node_old"], caption="図版", rights_note="CC0",
+                 source_url="https://example.org/plate")
+    data["assets"] = [asset]
+    scene = layout(data, run_dir=tmp_path)
+    plate = scene["assets"][0]
+    assert node(scene)["asset_refs"] == ["asset_plate"]
+    assert plate["record"] == asset
+    result = emit(scene, tmp_path)
+    assert result["pdf_scale"] == 1 and result["primary_format"] == "pdf"
+    x, y, w, h = plate["bbox"]
+    svg = (tmp_path / "map.svg").read_text()
+    assert svg in (tmp_path / "map.html").read_text()
+    group = ET.fromstring(svg).find("{*}g[@data-asset-id='asset_plate']")
+    encoded = group.find("{*}image").get("href").split(",", 1)[1]
+    with Image.open(io.BytesIO(base64.b64decode(encoded))) as decoded:
+        assert decoded.getpixel((15, 10)) == image.getpixel((15, 10))
+    with pymupdf.open(tmp_path / "map.pdf") as doc:
+        page = doc[0]
+        pix = page.get_pixmap(clip=pymupdf.Rect(x, y, x+w, y+h))
+        assert pix.pixel(pix.width//2, pix.height//2) == image.getpixel((15, 10))
+        assert "CC0" in page.get_text()
+        assert asset["source_url"] in [link["uri"] for link in page.get_links()]
+    plate["bbox"] = node(scene)["bbox"]
+    with pytest.raises(LayoutError, match="reserved area"):
+        check_scene(scene, data)
+
+
+def test_reference_only_and_missing_registered_file(tmp_path):
+    data = sample()
+    entry = dict(id="asset_ref", schema_version="0.5", asset_type="external_reference",
+                 source_url="https://example.org/source", rights_note="参照のみ")
+    data["assets"] = [entry]
+    ref = layout(data)["assets"][0]
+    assert "image_data" not in ref and ref["record"]["rights_note"] == "参照のみ"
+    entry.pop("asset_type")
+    entry["local_path"] = "absent.jpg"
+    with pytest.raises(LayoutError, match="absent.jpg"):
+        layout(data, run_dir=tmp_path)
+
+
+def test_recover_and_rerender_registered_embedded_figure(tmp_path):
+    import json
+    import pymupdf
+    from PIL import Image
+    import base64
+    import io
+
+    old = tmp_path / "render"
+    old.mkdir()
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=200, height=150)
+        page.draw_rect((12, 12, 23, 23), fill=(1, 0, 0))
+        pdf.save(old / "map.pdf")
+    (old / "scene.json").write_text(json.dumps({
+        "canvas_width": 400, "canvas_height": 300,
+        "figure": {"asset_id": "asset_diagram", "node_id": "node_old",
+                   "bbox": [20, 20, 30, 30]},
+    }))
+    data = sample()
+    data["assets"] = [dict(id="asset_diagram", schema_version="0.5", node_id="node_old",
+                           type="diagram", title="模式図", rights_note="自作")]
+    scene = layout(data, run_dir=tmp_path)
+    payload = scene["assets"][0]["image_data"]
+    with Image.open(io.BytesIO(base64.b64decode(payload))) as decoded:
+        assert decoded.getpixel((decoded.width//2, decoded.height//2)) == (255, 0, 0)
+    assert emit(scene, old)["primary_format"] == "pdf"
+    assert layout(data, run_dir=tmp_path)["assets"][0]["image_data"] == payload

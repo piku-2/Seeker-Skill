@@ -1,6 +1,8 @@
 """Render a common drawing scene as one-page PDF, standalone SVG and HTML."""
 
+import base64
 import html
+import io
 import json
 import math
 import xml.etree.ElementTree as ET
@@ -104,6 +106,18 @@ def render_svg(scene):
         parts.extend(svg_text(line) for line in ref["text_lines"])
         if url:
             parts.append("</a>")
+    for asset in scene.get("assets", []):
+        parts.append(f'<g data-asset-id="{html.escape(asset["id"])}">')
+        if "bbox" in asset:
+            x, y, w, h = asset["bbox"]
+            parts.append(f'<image x="{x}" y="{y}" width="{w}" height="{h}" '
+                         f'href="data:{asset["mime"]};base64,{asset["image_data"]}"/>')
+        for line in asset["text_lines"]:
+            text = svg_text(line)
+            if line.get("source_url", "").startswith(("https://", "http://")):
+                text = f'<a href="{html.escape(line["source_url"])}">{text}</a>'
+            parts.append(text)
+        parts.append("</g>")
     parts.append("</svg>")
     return "\n".join(parts)
 
@@ -127,17 +141,41 @@ def render_html(scene, svg):
     )
 
 
+def _link_areas(scene):
+    for ref in scene["sources"]:
+        url = _source_url(ref)
+        if url:
+            for line in ref["text_lines"]:
+                yield url, line["bbox"]
+    for asset in scene.get("assets", []):
+        for line in asset.get("text_lines", []):
+            url = line.get("source_url", "")
+            if url.startswith(("https://", "http://")):
+                yield url, line["bbox"]
+
+
+def _pdf_scale(scene):
+    return min(1.0, 14000 / max(scene["canvas_width"], scene["canvas_height"]))
+
+
+# Lower bound for annotations at native PDF size, in typographic points.
+MIN_SCALED_TEXT_PT = 6.0
+
+
 def render_pdf(scene, path):
     from reportlab.lib.colors import HexColor
     from reportlab.pdfgen import canvas
 
     w, h = scene["canvas_width"], scene["canvas_height"]
-    if w > 14000 or h > 14000:
-        raise ValueError("one-page PDF exceeds conservative 14000 pt canvas limit")
+    from reportlab.lib.utils import ImageReader
+
+    scale = _pdf_scale(scene)
     font()
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    c = canvas.Canvas(str(path), pagesize=(w, h), pageCompression=1)
+    c = canvas.Canvas(str(path), pagesize=(w * scale, h * scale), pageCompression=1)
+    # All drawing and relative annotations below use original scene units.
+    c.scale(scale, scale)
     c.setTitle(scene["title"])
 
     def flip(point):
@@ -210,14 +248,15 @@ def render_pdf(scene, path):
         c.setStrokeColor(HexColor(style["stroke"]))
         c.setLineWidth(style["width"])
         c.roundRect(x, h - y - hh, ww, hh, 9, fill=1, stroke=1)
+    for asset in scene.get("assets", []):
+        if "bbox" in asset:
+            x, y, iw, ih = asset["bbox"]
+            image = ImageReader(io.BytesIO(base64.b64decode(asset["image_data"])))
+            c.drawImage(image, x, h - y - ih, iw, ih, mask="auto")
     for line in all_text_lines(scene):
         label(line)
-    for ref in scene["sources"]:
-        url = _source_url(ref)
-        if url:
-            for line in ref["text_lines"]:
-                x, y, ww, hh = line["bbox"]
-                c.linkURL(url, (x, h - y - hh, x + ww, h - y), relative=0)
+    for url, (x, y, ww, hh) in _link_areas(scene):
+        c.linkURL(url, (x, h - y - hh, x + ww, h - y), relative=1)
     c.showPage()
     c.save()
     return path
@@ -256,6 +295,16 @@ def _check_svg(scene, svg, html_document):
                 f"{eid}: SVG connection differs from scene",
                 edge_id=eid,
             )
+    groups = root.findall(f"{SVG_NS}g[@data-asset-id]")
+    if [g.get("data-asset-id") for g in groups] != [a["id"] for a in scene.get("assets", [])]:
+        raise ValueError("SVG asset IDs differ from scene")
+    for group, asset in zip(groups, scene.get("assets", [])):
+        image = group.find(f"{SVG_NS}image")
+        if "bbox" in asset:
+            if image is None or image.get("href") != f'data:{asset["mime"]};base64,{asset["image_data"]}':
+                raise ValueError("SVG image differs from scene")
+            if [float(image.get(v)) for v in ("x", "y", "width", "height")] != asset["bbox"]:
+                raise ValueError("SVG image bounds differ from scene")
     expected = [line["text"] for line in all_text_lines(scene)]
     # SVG groups place text in paint order, which differs from the PDF text layer.
     actual = [line.text or "" for line in root.iter(f"{SVG_NS}text")]
@@ -274,11 +323,33 @@ def _check_pdf(scene, output):
         try:
             import fitz as pymupdf
         except ImportError:
-            return "file_signature"
+            raise ValueError("PyMuPDF required for PDF content verification")
     with pymupdf.open(output) as document:
         if len(document) != 1:
             raise ValueError("PDF was not single page")
         page = document[0]
+        scale = _pdf_scale(scene)
+
+        def page_rect(box):
+            x, y, w, h = box
+            return (x * scale, y * scale, (x + w) * scale, (y + h) * scale)
+
+        def close_rect(actual, expected):
+            return max(abs(a - b) for a, b in zip(actual, expected)) < 0.03
+
+        if not close_rect(page.rect, page_rect((0, 0, scene["canvas_width"], scene["canvas_height"]))):
+            raise ValueError("PDF page bounds differ from scene")
+        links = [(link.get("uri"), link["from"]) for link in page.get_links()]
+        expected_links = [(url, page_rect(box)) for url, box in _link_areas(scene)]
+        if len(links) != len(expected_links) or any(
+            url != expected or not close_rect(rect, box)
+            for (url, rect), (expected, box) in zip(links, expected_links)
+        ):
+            raise ValueError("PDF source link URL or rectangle differs from scene")
+        boxes = [page_rect(a["bbox"]) for a in scene.get("assets", []) if "bbox" in a]
+        images = page.get_image_info()
+        if len(boxes) != len(images) or any(not close_rect(im["bbox"], box) for im, box in zip(images, boxes)):
+            raise ValueError("PDF image bounds differ from scene")
         # Extract glyph origins instead of clipping against renderer-specific ascenders.
         baselines = defaultdict(list)
         for block in page.get_text(
@@ -288,7 +359,7 @@ def _check_pdf(scene, output):
                 for span in line["spans"]:
                     for char in span["chars"]:
                         x, y = char["origin"]
-                        baselines[y].append((x, char["c"]))
+                        baselines[y / scale].append((x / scale, char["c"]))
         rows = sorted(baselines)
         for line in all_text_lines(scene):
             if not line["text"].strip():
@@ -325,12 +396,20 @@ def emit(scene, out_dir, force_pdf_error=False):
     svg_path.write_text(svg, encoding="utf-8")
     html_path.write_text(html_document, encoding="utf-8")
     reason, pdf_check = None, None
+    scale = _pdf_scale(scene)
+    minimum = min(line["size"] for line in all_text_lines(scene) if line["text"]) * scale
+    warning = None
     try:
         if force_pdf_error:
             raise ValueError("injected PDF failure")
         render_pdf(scene, pdf_path)
         pdf_check = _check_pdf(scene, pdf_path)
-        primary, output = "pdf", pdf_path
+        if scale < 1 and minimum < MIN_SCALED_TEXT_PT:
+            warning = f"PDF最小文字サイズ {minimum:.2f} pt は可読性の目安 {MIN_SCALED_TEXT_PT:g} pt 未満です。"
+            reason = warning
+            primary, output = "svg", svg_path
+        else:
+            primary, output = "pdf", pdf_path
     except Exception as exc:  # noqa: BLE001 - renderer and reader failures trigger SVG fallback
         reason = str(exc)
         primary, output = "svg", svg_path
@@ -343,6 +422,9 @@ def emit(scene, out_dir, force_pdf_error=False):
         "svg_path": str(svg_path),
         "html_path": str(html_path),
         "pdf_check": pdf_check,
+        "pdf_scale": scale,
+        "pdf_min_text_pt": minimum,
+        "pdf_warning": warning,
     }
     (out_dir / "render_result.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"

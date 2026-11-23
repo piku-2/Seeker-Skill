@@ -120,7 +120,7 @@ def main(argv=None):
                 if args.importance
                 else None
             )
-            scene = layout(data, progress["run_id"], progress["query"], importance)
+            scene = layout(data, progress["run_id"], progress["query"], importance, run_dir=args.run)
             result = emit(scene, Path(args.run) / "render", args.force_pdf_error)
             artifacts = [
                 f"render/{f}"
