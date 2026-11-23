@@ -9,6 +9,16 @@ description: Given any Japanese or other topic, investigate its evidence-backed 
 
 Accept a topic after `/truth-seeker`, or ask for a topic only when none is present. Work autonomously; do not ask for a detailed research plan. Produce a researched chronological knowledge map **in Japanese**, aiming to complete all meaningful paths, not an arbitrary top-N summary. If interrupted, preserve the run and give the exact command to resume. Never claim to have completed research, source verification, or visual inspection that was not actually performed.
 
+## Topic Disambiguation
+
+- ユーザーは調査テーマだけを指定する。
+- 同名異義などにより対象を一意に特定できない場合のみ質問する。
+- 対象が明確なら確認せず直ちに本調査を開始する。
+- 調査目的、興味分野、対象年代、情報量、調査範囲を質問しない。
+- 対象の特定は調査範囲の制限を意味しない。
+- 確定した対象から、歴史的に有意な起源・発展・影響・合流を自律的に探索する。
+- 正式採用したノード・エッジは情報量を理由に省略しない。
+
 ## Working location
 
 Work inside this repository. Run `python -m truth_seeker ...` from repo root (or install with `pip install -e .`). Local run material is stored in `runs/` and must not be committed. This Skill delegates factual investigation to the host agent's actual web/search tools. **Python code does not invent web citations or perform automatic research.** If web search is unavailable, do not synthesize sources: record blocked tasks and mark incomplete.
