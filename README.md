@@ -1,4 +1,4 @@
-# Truth Seeker v1.1
+# Truth Seeker v1.2
 
 DeepResearchを使ってめっちゃ調べて巨大な一枚のPDFを生成するスキルです。
 このスキルで作った資料は商用利用できません。
@@ -35,7 +35,7 @@ $resume-truth-seeker
 
 ```bash
 uv sync
-uv run pytest -v
+uv run pytest -v -rs
 ```
 
 `pyproject.toml` に定義された依存パッケージをインストールし、仮想環境を準備します。
