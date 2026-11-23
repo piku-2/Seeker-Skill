@@ -5,13 +5,25 @@ DeepResearchを使ってめっちゃ調べて巨大な一枚のPDFを生成す�
 
 ## クイックスタート
 
-クローンしたリポジトリをAIエージェントで開き、以下を実行するだけです。
+クローンしたリポジトリをCodexで開き、チャットの入力欄で `$` を打って `truth-seeker` を選び、調査テーマを続けて送ります。
 
 ```text
-/truth-seeker "検索ワード"
+$truth-seeker 調べたいワード
 ```
 
-スラッシュ呼び出しに対応していない環境の場合は、`.agents/skills/truth-seeker/SKILL.md` を参照させて「〇〇についてTruth Seekerで歴史知識マップを作成して」と指示してください。AIエージェントがWeb検索、史料の読み取り、裏付けと異説の検証を担い、Pythonエンジンはデータ契約・チェックポイント・描画を担います。
+Codex以外のハーネスを使う場合はチャット欄で `/` を打って `truth-seeker` を選び、調査テーマを続けて送ります。
+
+```text
+/truth-seeker 調べたいワード
+```
+
+レートリミットが来たり、途中で作業が止まってしまった場合はそのセッションで `resume-truth-seeker` を選ぶと、中断した調査を再開できます。
+
+```text
+$resume-truth-seeker
+```
+
+スキルの候補が表示されない場合は、「`.agents/skills/truth-seeker/SKILL.md` に従って、〇〇についてTruth Seekerで歴史知識マップを作成して」と送れます。AIエージェントがWeb検索、史料の読み取り、裏付けと異説の検証を担い、Pythonエンジンはデータ契約・チェックポイント・描画を担います。
 
 ## 必要環境
 
@@ -20,6 +32,7 @@ DeepResearchを使ってめっちゃ調べて巨大な一枚のPDFを生成す�
 - Web検索・資料確認に対応したAIエージェント（サブエージェント利用推奨）
 
 ※依存ライブラリが未インストールの環境のみ以下を実行してください：
+
 ```bash
 pip install reportlab pillow
 # または uv をお使いの場合: uv pip install reportlab pillow
@@ -28,6 +41,7 @@ pip install reportlab pillow
 ## 開発・テスト（任意）
 
 レイアウトの回帰テストを含むテスト一式は pytest で実行します。
+
 ```bash
 python -m pytest -q
 ```
@@ -61,7 +75,11 @@ python -m truth_seeker resume runs/<run_dir>
 
 ```json
 {
-  "node_example": {"level": 4, "reason": "主題の成立を決めた転換点", "source": "research"}
+  "node_example": {
+    "level": 4,
+    "reason": "主題の成立を決めた転換点",
+    "source": "research"
+  }
 }
 ```
 
@@ -71,7 +89,7 @@ python -m truth_seeker resume runs/<run_dir>
 
 ## 修復とGit
 
-`/skill-repair` はローカルログから修正案を提示する。**明示承認前に変更しない**。承認後に作業ツリーを直接修正し、ファイル全体のバックアップを `repair_backups/` に置く。修正テスト失敗時の復元は本人単独利用向けで、修復途中の別編集まで完全に保護するものではない。修正の承認とは別に、commitとpushの一括承認を要求する。
+`$skill-repair` はローカルログから修正案を提示する。**明示承認前に変更しない**。承認後に作業ツリーを直接修正し、ファイル全体のバックアップを `repair_backups/` に置く。修正テスト失敗時の復元は本人単独利用向けで、修復途中の別編集まで完全に保護するものではない。修正の承認とは別に、commitとpushの一括承認を要求する。
 
 `.gitignore` だけを過信せず `python -m truth_seeker git-check` で実ステージングを検査する。確認できた範囲でも、秘密検査には見逃しがあり得るため目視確認が必要。
 
