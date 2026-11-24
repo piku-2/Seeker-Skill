@@ -232,8 +232,14 @@ def _ensure_illustration_task(progress):
 
 
 def save_illustrations(base, report, complete=False):
+    from .figure_plan import validate_plan
+
+    def validate_report(report, data):
+        validate_search(report, data)
+        validate_plan(report.get("figure_plan"), data)
+
     return _save_research_report(
-        base, report, complete, TASK_KIND, TASK_TOPIC, "illustration", validate_search
+        base, report, complete, TASK_KIND, TASK_TOPIC, "illustration", validate_report
     )
 
 
@@ -295,6 +301,13 @@ def resume(base):
                 task["last_error"] = (
                     f"Active generation changed; recheck the {prefix} report"
                 )
+        if illustrations["status"] == "completed" and not isinstance(
+            illustrations.get("illustration_report", {}).get("figure_plan"), dict
+        ):
+            _set_task_status(pr, illustrations, "retryable")
+            illustrations["last_error"] = (
+                "Review figure opportunities in the saved illustration report"
+            )
         pr["run_status"] = "paused"
         atomic_json(base / "progress.json", pr)
         if (base / "manifest.json").exists():

@@ -1,6 +1,7 @@
 """Evidence-backed vector figures shared by the SVG and PDF renderers."""
 
 import math
+from collections import defaultdict
 
 from .model import ensure
 from .typography import text_lines
@@ -9,6 +10,8 @@ INK = "#243747"
 ACCENT = "#326D8D"
 MUTED = "#DBE8ED"
 WHITE = "#FFFFFF"
+EDGE_FIGURES = ("relations", "lineage", "composition")
+FIGURE_KINDS = (*EDGE_FIGURES, "timeline", "table", "bar", "distribution")
 
 
 def _text(value):
@@ -19,7 +22,7 @@ def _number(value):
     return type(value) in (int, float) and abs(value) <= 1e100 and math.isfinite(value)
 
 
-def validate_figure(asset, nodes, edges, evidence, claims):
+def validate_figure(asset, nodes, edges, evidence, claims, chronology):
     figure = asset.get("figure")
     key = asset["id"]
     ensure(
@@ -28,7 +31,7 @@ def validate_figure(asset, nodes, edges, evidence, claims):
     )
     kind = figure.get("kind")
     ensure(
-        kind in ("table", "relations", "bar", "distribution"),
+        kind in FIGURE_KINDS,
         f"{key}: unknown figure kind",
     )
     refs = set(asset.get("evidence_ids", []))
@@ -44,7 +47,42 @@ def validate_figure(asset, nodes, edges, evidence, claims):
         owners and all(nodes[k]["adoption_status"] == "adopted" for k in owners),
         f"{key}: generated figure needs adopted owners",
     )
-    if kind == "relations":
+    if kind == "timeline":
+        ids = figure.get("node_ids")
+        ensure(
+            isinstance(ids, list)
+            and len(ids) >= 2
+            and all(isinstance(nid, str) and nid in owners for nid in ids)
+            and len(set(ids)) == len(ids)
+            and all(
+                chronology[nid]["mode"] in ("anchored", "estimated") for nid in ids
+            ),
+            f"{key}: timeline needs distinct dated owners with historical date assertions",
+        )
+        for nid in ids:
+            node = nodes[nid]
+            date = node["display_date"]
+            basis_ids = (
+                date["basis_claim_ids"]
+                if date["mode"] == "estimated"
+                else (
+                    {
+                        cid
+                        for item in node["dates"]
+                        for cid in item.get("basis_claim_ids", [])
+                    }
+                    or node["claim_ids"]
+                )
+            )
+            ensure(
+                any(
+                    refs.intersection(claims[cid]["supporting_evidence_ids"])
+                    for cid in basis_ids
+                ),
+                f"{key}: missing timeline evidence for {nid}",
+            )
+        return
+    if kind in EDGE_FIGURES:
         ids = figure.get("edge_ids")
         ensure(
             isinstance(ids, list)
@@ -66,6 +104,7 @@ def validate_figure(asset, nodes, edges, evidence, claims):
                 ref
                 for cid in edges[eid]["claim_ids"]
                 for field in ("supporting_evidence_ids", "contradicting_evidence_ids")
+                if kind == "relations" or field == "supporting_evidence_ids"
                 for ref in claims[cid][field]
             }
             ensure(refs & edge_sources, f"{key}: missing figure evidence for {eid}")
@@ -116,7 +155,7 @@ def validate_figure(asset, nodes, edges, evidence, claims):
 
 
 def preferred_width(figure):
-    if figure["kind"] in ("relations", "distribution"):
+    if figure["kind"] in (*EDGE_FIGURES, "distribution", "timeline"):
         return 460
     if figure["kind"] == "table":
         return max(280, 88 * len(figure["columns"]))
@@ -137,7 +176,18 @@ def draw_figure(figure, x, top, width, nodes, edges):
         return box[1] + box[3]
 
     kind = figure["kind"]
-    if kind == "table":
+    if kind in ("table", "timeline"):
+        if kind == "timeline":
+            ordered = sorted(
+                (nodes[nid] for nid in figure["node_ids"]),
+                key=lambda node: node["anchor_year"],
+            )
+            figure = {
+                "columns": ["対象", "年代（研究上の推定を含む）"],
+                "rows": [
+                    {"cells": [node["label"], node["date_label"]]} for node in ordered
+                ],
+            }
         headings = figure["columns"]
         rows = [row["cells"] for row in figure["rows"]]
         room = width / len(headings)
@@ -158,39 +208,76 @@ def draw_figure(figure, x, top, width, nodes, edges):
                     ACCENT if i == 0 else MUTED if i % 2 else WHITE,
                 )
             y += h + 1
-    elif kind == "relations":
+    elif kind in EDGE_FIGURES:
+        if kind == "lineage":
+            y = (
+                label("本文の伝承・翻訳・継承（関係の種類は各行に表示）", x, y, width)
+                + 8
+            )
+        if kind == "composition":
+            y = label("全体と構成要素（矢印は年代順を示さない）", x, y, width) + 8
         box_width = width * 0.25
         middle = x + box_width
+        right = x + 3 * box_width
+        groups = defaultdict(list)
         for eid in figure["edge_ids"]:
             edge = edges[eid]
-            qualifiers = [
-                label
-                for state, label in (
-                    ("favored", "有力説"),
-                    ("contested", "論争中"),
-                    ("hypothetical", "仮説"),
-                    ("unverified", "未検証"),
+            group = (
+                edge["source_id"]
+                if kind == "lineage"
+                else (edge["target_id"] if kind == "composition" else eid)
+            )
+            groups[group].append(edge)
+        for group, members in groups.items():
+            group_top = y
+            if kind in ("lineage", "composition"):
+                shared_x = x if kind == "lineage" else right
+                shared_bottom = (
+                    label(nodes[group]["label"], shared_x + 7, y + 8, box_width - 14)
+                    + 7
                 )
-                if state in edge.get("assessments", ())
-                or (state == "hypothetical" and edge["relation_type"] == "hypothesis")
-            ]
-            relation = edge["label"] or edge["relation_type"]
-            if qualifiers:
-                relation += "（" + "・".join(qualifiers) + "）"
-            end = label(relation, middle + 12, y + 6, 2 * box_width - 24)
-            left_end = label(
-                nodes[edge["source_id"]]["label"], x + 7, y + 8, box_width - 14
-            )
-            right = x + 3 * box_width
-            right_end = label(
-                nodes[edge["target_id"]]["label"], right + 7, y + 8, box_width - 14
-            )
-            bottom = max(end + 16, left_end, right_end) + 7
-            rect(x, y, box_width, bottom - y, MUTED)
-            rect(right, y, box_width, bottom - y, MUTED)
-            rect(middle + 3, bottom - 9, 2 * box_width - 16, 1, ACCENT)
-            label("→", right - 14, bottom - 14, 14, ACCENT)
-            y = bottom + 8
+            for edge in members:
+                qualifiers = [
+                    name
+                    for state, name in (
+                        ("favored", "有力説"),
+                        ("contested", "論争中"),
+                        ("hypothetical", "仮説"),
+                        ("unverified", "未検証"),
+                    )
+                    if state in edge.get("assessments", ())
+                    or (
+                        state == "hypothetical"
+                        and edge["relation_type"] == "hypothesis"
+                    )
+                ]
+                relation = edge["label"] or edge["relation_type"]
+                if qualifiers:
+                    relation += "（" + "・".join(qualifiers) + "）"
+                end = label(relation, middle + 12, y + 6, 2 * box_width - 24)
+                endpoints = []
+                if kind != "lineage":
+                    endpoints.append((x, edge["source_id"]))
+                if kind != "composition":
+                    endpoints.append((right, edge["target_id"]))
+                bottom = (
+                    max(
+                        [end + 16]
+                        + [
+                            label(nodes[nid]["label"], left + 7, y + 8, box_width - 14)
+                            for left, nid in endpoints
+                        ]
+                    )
+                    + 7
+                )
+                for left, _ in endpoints:
+                    rect(left, y, box_width, bottom - y, MUTED)
+                rect(middle + 3, bottom - 9, 2 * box_width - 16, 1, ACCENT)
+                label("→", right - 14, bottom - 14, 14, ACCENT)
+                y = bottom + 8
+            if kind in ("lineage", "composition"):
+                y = max(y, shared_bottom + 8)
+                rect(shared_x, group_top, box_width, y - group_top - 8, MUTED)
     elif kind == "bar":
         rows = figure["rows"]
         low, high = (

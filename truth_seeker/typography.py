@@ -113,6 +113,11 @@ def display_text(text):
     )
 
 
+def missing_display_glyphs(text):
+    """Check the characters that remain after the line wrapper normalizes text."""
+    return missing_glyphs(display_text(text).replace("\n", ""))
+
+
 def measure(text, size):
     """Return ink and advance bounds relative to the baseline origin, in points."""
     x = left = right = 0

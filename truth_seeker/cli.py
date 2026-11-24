@@ -9,6 +9,7 @@ from .model import LayoutError, ValidationError, load_generation, validate
 from .qa import judge
 from .render import emit, layout
 from .repair import RepairError, apply, inspect, staged_check
+from .scene import check_font_coverage
 from .store import (
     add_task,
     atomic_json,
@@ -77,6 +78,15 @@ def build_parser():
     a.add_argument("run")
     a = s.add_parser("validate")
     a.add_argument("generation")
+    a = s.add_parser(
+        "figure-candidates", help="List graph structures to review for figures"
+    )
+    a.add_argument("generation", type=Path, help="Staged or saved generation directory")
+    a = s.add_parser("font-check", help="Find unsupported characters before rendering")
+    a.add_argument("generation", type=Path, help="Staged or saved generation directory")
+    a.add_argument(
+        "--title", default="歴史知識地図", help="Title to check with the graph"
+    )
     a = s.add_parser("merge")
     a.add_argument("run")
     a.add_argument(
@@ -131,6 +141,25 @@ def main(argv=None):
             output(resume(args.run))
         elif args.command == "validate":
             output(validate(load_generation(args.generation)))
+        elif args.command == "figure-candidates":
+            from .figure_plan import opportunities
+
+            if not (args.generation / "nodes.jsonl").is_file():
+                raise ValidationError(
+                    f"Generation has no nodes.jsonl: {args.generation}"
+                )
+            data = load_generation(args.generation)
+            validate(data)
+            output({"candidates": opportunities(data)})
+        elif args.command == "font-check":
+            if not (args.generation / "nodes.jsonl").is_file():
+                raise ValidationError(
+                    f"Generation has no nodes.jsonl: {args.generation}"
+                )
+            data = load_generation(args.generation)
+            validate(data)
+            check_font_coverage(data, args.title)
+            output({"status": "pass"})
         elif args.command == "merge":
             data = load_generation(args.generation_dir)
             gen = commit_generation(args.run, data)
@@ -193,9 +222,14 @@ def main(argv=None):
                     "scene": qa["scene"],
                     "illustrations": qa["illustrations"],
                     "representatives": qa["representatives"],
+                    "chronology": qa["chronology"],
+                    "figures": qa["figures"],
                     "note": "Review flags must be supported by actual agent evidence, not invented",
                 }
-                atomic_json(Path(args.run) / "qa" / "illustration-result.json", result)
+                qa_dir = Path(args.run) / "qa"
+                atomic_json(qa_dir / generation / "review.json", review)
+                atomic_json(qa_dir / generation / "result.json", result)
+                atomic_json(qa_dir / "illustration-result.json", result)
             output(result)
         elif args.command == "repair-show":
             output(inspect(".", args.proposal))

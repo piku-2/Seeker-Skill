@@ -9,9 +9,40 @@ Canonical rules are in `truth_seeker/model.py` and `Truth_Seeker_v0.5_FINAL_SPEC
 - Evidence: `title`, `source_url`, `locator`, `excerpt_or_summary`, `source_type`, `access_status`, `accessed_at`, `independence_group`, `rights_note`, `provenance`.
 - Assets: register local rasters with `asset_type` set to `photo`, `primary_document`, `diagram`, `map`, or `chart`. Supply a `caption` or `title`, `license` or `rights_note`, and a source URL or cited `evidence_ids` with a source URL. Use `local_path` relative to the run and optional `sha256`. Associate a primary `node_id` and optional `related_node_ids` to reserve space near the historical subject. Charts use documented values, and diagrams distinguish explanatory reconstruction from original material. Legacy embedded figures can still be recovered from the run render.
 - `adoption_status`: `candidate|adopted|pending|rejected`. `assessment`: `verified|favored|contested|hypothetical|unverified` (always preserve these five).
-- `display_date`: `{"mode":"anchored","anchor_year":1234,"anchor_reason":"...","basis_claim_ids":[]}` or `{"mode":"unknown"}`. Historical BCE year numbering is astronomical: 1 BCE = year 0, 2 BCE = year -1. `dates` holds any nuanced alternate time intervals; never average conflicting estimates into a false fact.
 - Each `provenance` minimum: `run_id`, `source_task_id`, `created_at`, `updated_at`, `origin`.
 - Adopted edges can only connect adopted nodes. A source URL alone cannot justify marking a claim verified. All referenced claim and evidence IDs must exist.
+
+## Chronology and placement
+
+`dates` stores historical assertions. Each entry can have `kind`, `status` (`confirmed` by default or `estimated`), `earliest`, `latest`, `label` and `basis_claim_ids`. Use null for an open boundary. Astronomical numbering represents 1 BCE as 0, 2 BCE as -1 and 1 CE as 1. Preserve competing ranges separately. Use distinct kinds for the narrated setting (`narrative`) and the historical phases of a text. Historical kinds include `event`, `activity`, `composition`, `editing`, `production`, `discovery`, `translation`, `transmission`, `attestation`, `language` and `reception`.
+
+| `display_date.mode` | Inputs and display |
+| --- | --- |
+| `anchored` | `anchor_year` and optional `kind`, `anchor_reason` and `basis_claim_ids`. A typed anchor must match a confirmed range for its phase if one exists. Untyped legacy anchors retain their existing labels. |
+| `estimated` | Historical `kind`, `earliest` and/or `latest`, `basis_claim_ids` included in the node’s claims, `anchor_reason`, and `uncertainty`. Choose the research-supported range before placing the card. The default layout year is the midpoint or the single known boundary. An optional `anchor_year` must lie inside the range. |
+| `sequence` | Historical `kind`, `edge_ids`, `anchor_reason`, and `uncertainty`. Each edge must connect an independently dated node that bounds the placement. The renderer uses the strongest lower and upper bounds and the median of the reference anchors, confined to the bounds and the displayed order. Explicit `anchor_year` is allowed within those bounds. The card labels this as a placement guide. |
+| `unknown` | Keep it in the undated region and supply a `reason` describing the missing evidence or incompatible interpretations. Legacy records without a reason can still be loaded and drawn. Supply the explanation in the QA review if rechecking a legacy graph. |
+
+For sequence placement, annotate the adopted edge with `"chronology": {"source_kind": "editing", "target_kind": "translation", "basis_claim_ids": ["claim_example"]}`. Its direction asserts that the named source phase precedes the target phase. Match both endpoint kinds and cite supporting claims on the edge. Ordinary influence, resemblance, context and comparison edges never contribute date bounds. The machine rejects missing support, reversed bounds and cycles. A phase may be supported by an accessible adopted claim assessed as verified, favored or contested. Reviewers must assess what the claim actually establishes. Unverified phase dates and the chronology inside a story can be retained in `dates` alongside a different historical placement.
+
+The common scene records the resolved year and bounds in `date_placement`. The card and chronology guide distinguish a dated anchor, a research estimate, placement based on precedence, and a node without a usable date. Only the range and phase are presented as the estimated date. The layout year remains a coordinate. This leaves line styles available for edge uncertainty.
+
+Include `chronology_review` in the generation’s QA. Set `phases_and_order_checked` after checking what each date refers to, the basis of each estimate and whether sequence edges support precedence. Record specific `findings` and use `node_notes` keyed by node ID for each estimate, sequence placement, and unexplained legacy unknown. Save evolving estimates in staging or in a new, validated generation. Preserve the earlier generation.
+
+## Displaying original spellings and translated labels
+
+A record can include an optional `display` object with nonblank strings for the map. Retain the original wording in the ordinary fields. For example, an evidence record may have `"locator": "מגילת התרי־עשר"` and `"display": {"locator": "十二小預言書の巻物"}`. The display text is used consistently in the map and HTML index. The original records and citation URLs remain in the generation.
+
+| Record | Allowed keys in `display` |
+| --- | --- |
+| Node | `label`, `summary` |
+| Evidence | `title`, `locator` |
+| Asset | `caption`, `creator`, `rights_note` |
+| Generated asset | Asset keys plus text fields such as `figure.columns.0`, `figure.rows.0.cells.1`, `figure.rows.0.label` and `figure.unit` when the corresponding field exists. Indices start at 0. |
+
+Keep enough information in each replacement to identify the document, locator or credited person. If no replacement is given, the original text is used. An asset can override `caption` even if its original wording is stored in `title`. Figure values and sources, hyperlink destinations and the license field continue to use the original data.
+
+Run `python -m truth_seeker font-check <generation_dir> --title "<topic>"` on staged or saved data. It reports each unsupported character by record ID and field path, including `display.` paths when a replacement itself contains unsupported characters. The normal render command runs the same check before laying out the map.
 
 The validation helper is intentionally strict about required references but does not automatically judge the truth of historical assertions. Document sources and genuine counterevidence in the agent research and QA report.
 
@@ -55,16 +86,35 @@ For zero images use `assets: []` and explain why the documented search was adequ
 
 ## Generated vector figures
 
-An `assets.jsonl` record can use `asset_type: "generated"` with a `figure` object, caption, original credit in `rights_note`, and accessible `evidence_ids`. Link it to adopted nodes using `node_id` or `related_node_ids`. Use `placement: "gallery"` for a separate comparison panel that keeps its node associations, or leave placement unset for an inline panel. Photo and scan records still use the raster path. Multiple panels may share a node, and full graph coverage takes priority over output dimensions.
+An `assets.jsonl` record can use `asset_type: "generated"` with a `figure` object, caption, original credit in `rights_note`, and accessible `evidence_ids`. Link it to adopted nodes using `node_id` or `related_node_ids`. Use `placement: "gallery"` for a separate comparison panel that keeps its node associations. Use `placement: "band"` for a panel shared by at least two adopted nodes, or leave placement unset for an inline panel. A band panel is placed near the highest-ranked dated owner, preferring a designated `node_id` when one is given. Undated panels can share the undated band. Band panels participate in the same width and row calculations as cards, and the edge router treats their reserved area as an obstacle. Photo and scan records still use the raster path. Multiple panels may share a node, and full graph coverage takes priority over output dimensions.
 
 | `figure.kind` | Content |
 | --- | --- |
 | `table` | `columns` and `rows` containing one `cells` array per row |
 | `relations` | `edge_ids` referring to adopted graph edges whose endpoints are panel owners. Each edge must share a cited source with the panel. |
+| `timeline` | `node_ids` of at least two related nodes with historical dates or research estimates. Cite supporting evidence for each node’s date. The figure uses the same phase, range and estimate labels as the map. |
+| `lineage` | `edge_ids` grouped by source for related continuations, translations or branching traditions. Use the graph’s actual edge directions and label qualified claims. |
+| `composition` | `edge_ids` grouped by the receiving whole. Use source → target edges where the source is the component. The arrows describe structure. |
 | `bar` | `unit` and `rows` with a `label` and finite numeric `value` |
 | `distribution` | `rows` with `label`, `latitude` and `longitude`. Displays a coordinate plot without an inferred basemap. |
 
 Every table, numeric or coordinate row must reference a nonempty subset of the panel's `evidence_ids`. Supply only confirmed values. The engine tests the formal references and geometry; the reviewer checks whether each source actually supports the content. Figures render as common text and vector rectangles in PDF, SVG and HTML. In the illustration search record, use `rights: "original"` and a `rights_note` for generated panels, citing a checked evidence URL. External images continue to require cleared reuse terms and a rights URL. Include generated panels in the same visual review as photos.
+
+## Figure opportunities and completion
+
+Run `python -m truth_seeker figure-candidates <generation_dir>` on a staging or saved generation. It suggests structures from adopted dates, documents and relationships. Review these leads for importance and add topic-specific opportunities, including comparisons, chronology, lineage, composition, competing hypotheses, source concordances, geographic data, quantities and networks. Use the already verified node, edge, claim and evidence IDs. For hypotheses and source concordances, an ordinary evidence-backed `table` keeps competing positions or witness readings side by side.
+
+In the illustration report, save `figure_plan` with:
+
+| Field | Contents |
+| --- | --- |
+| `checks` | A specific finding per category using keys `comparisons`, `chronology`, `lineage`, `composition`, `hypotheses`, `sources`, `geography`, `quantities` and `relationships`. |
+| `decisions` | Each candidate’s `id`, `kind` (one of the figure kinds), adopted `node_ids`, explanatory `value`, `decision` and `reason`. Cover every ID returned by `figure-candidates` with at least two related nodes from the suggestion. Use an `asset_id` for adoption. Rejections need the concrete evidence or explanatory limitation. |
+| `zero_reason` | Required if no generated figures are adopted, even if photographs or scans are available. |
+
+Checkpoint the plan with `illustrations-save` while research continues. Finalization requires every decision to be resolved and every generated figure to have a matching adopted decision on the active generation. A resumed run retains its draft, and a legacy finished illustration report with no figure plan reopens for review. There is no figure count requirement.
+
+In `figure_review`, record `coverage_adequate` and specific `findings`. The `assets` object is keyed by generated asset ID. Each entry records `data_matches`, `uncertainty_clear` and `findings`. Use an empty object for a reviewed zero-figure run. Use `illustration_review` for the common caption, rights and visual checks on all assets. The completion gate verifies the plan, review records and actual output coverage. Reviewers check historical meaning, conflicting claims, approved reuse and explanatory value. The CLI saves the review and result under `qa/<generation>/`.
 
 ## Representative-subject review
 

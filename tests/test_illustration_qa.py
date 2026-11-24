@@ -8,6 +8,7 @@ from PIL import Image
 from test_engine import sample
 
 from truth_seeker.cli import main
+from truth_seeker.figure_plan import CHECKS
 from truth_seeker.model import ValidationError, load_generation, validate
 from truth_seeker.qa import judge
 from truth_seeker.render import emit, layout
@@ -56,12 +57,42 @@ def search_fixture():
             }
         ],
         "zero_reason": "架空アーカイブで確認した画像の再配布条件が明記されていない",
+        "figure_plan": {
+            "checks": {key: "架空のテストデータに検証済みの根拠なし" for key in CHECKS},
+            "decisions": [
+                {
+                    "id": f"graph-{category}",
+                    "kind": kind,
+                    "node_ids": ["node_old", "node_new"],
+                    "value": "年代と関係を見比べる",
+                    "decision": "rejected",
+                    "reason": "架空の候補に根拠が付いていない",
+                }
+                for category, kind in (
+                    ("chronology", "timeline"),
+                    ("hypotheses", "table"),
+                )
+            ],
+            "zero_reason": "グラフの比較候補はあるが、裏付けのある値・年代や比較情報はない。",
+        },
     }
 
 
 def review_fixture(generation, assets=(), independent="pass"):
     return {
         "generation": generation,
+        "chronology_review": {
+            "phases_and_order_checked": True,
+            "findings": "年代の種別と前後関係を架空データで照合した。",
+            "node_notes": {
+                "node_unknown": "この架空の概念は前後を判断できる資料がない。"
+            },
+        },
+        "figure_review": {
+            "coverage_adequate": True,
+            "findings": "図表候補と不採用理由を確認した。",
+            "assets": {},
+        },
         "representative_review": {
             "coverage_adequate": True,
             "findings": "架空の対象を確認",

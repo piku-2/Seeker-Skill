@@ -4,6 +4,8 @@ import base64
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from .chronology import is_text
+from .figure_plan import validate_plan, validate_review
 from .illustrations import validate_search, validate_visual_review
 from .model import ValidationError, ensure, validate
 from .render import check_saved_artifacts
@@ -118,14 +120,63 @@ def _representative_qa(data, review, progress):
     return {"status": "pass", "candidate_count": count}
 
 
+def _chronology_qa(data, review):
+    audit = review.get("chronology_review")
+    nodes = [node for node in data["nodes"] if node["adoption_status"] == "adopted"]
+    estimates = {
+        n["id"] for n in nodes if n["display_date"]["mode"] in ("estimated", "sequence")
+    }
+    unknown = {
+        n["id"]
+        for n in nodes
+        if n["display_date"]["mode"] == "unknown"
+        and not n["display_date"].get("reason")
+    }
+    try:
+        ensure(
+            isinstance(audit, dict)
+            and audit.get("phases_and_order_checked") is True
+            and is_text(audit.get("findings")),
+            "chronology: missing review of phases and precedence",
+        )
+        notes = audit.get("node_notes")
+        ensure(
+            isinstance(notes, dict)
+            and estimates | unknown <= notes.keys()
+            and all(is_text(notes[key]) for key in estimates | unknown),
+            "chronology: missing evidence review or explanation for an unplaced node",
+        )
+    except ValidationError as exc:
+        return {"status": "fail", "reason": str(exc)}
+    return {"status": "pass", "estimated_or_sequence_count": len(estimates)}
+
+
+def _figure_qa(data, review, progress, illustration):
+    try:
+        ensure(
+            illustration["status"] == "pass", "figures: finish illustration QA first"
+        )
+        report = illustration_task(progress)["illustration_report"]
+        count = validate_plan(report.get("figure_plan"), data)
+        validate_review(review.get("figure_review"), data)
+    except ValidationError as exc:
+        return {"status": "fail", "reason": str(exc)}
+    return {"status": "pass", "candidate_count": count}
+
+
 def judge(data, scene, review, *, progress=None, run_dir=None):
     v = validate(data)
     g = check_scene(scene, data)
     illustrations = _illustration_qa(data, scene, review, progress, run_dir)
     representatives = _representative_qa(data, review, progress)
+    chronology = _chronology_qa(data, review)
+    figures = _figure_qa(data, review, progress, illustrations)
     st = classify(
         review.get("research_complete") is True,
-        illustrations["status"] == "pass" and representatives["status"] == "pass",
+        all(
+            check["status"] == "pass"
+            for check in (illustrations, representatives, chronology, figures)
+        ),
         review.get("semantic_pass") is True,
         review.get("artifact_pass") is True,
         review.get("independent_review", "not_run"),
@@ -136,5 +187,7 @@ def judge(data, scene, review, *, progress=None, run_dir=None):
         "scene": g,
         "illustrations": illustrations,
         "representatives": representatives,
+        "chronology": chronology,
+        "figures": figures,
         "review": review,
     }

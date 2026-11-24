@@ -6,13 +6,21 @@ import io
 import json
 import math
 from collections import defaultdict
+from copy import deepcopy
 from itertools import chain, pairwise
 from pathlib import Path
 
 from PIL import Image
 
+from .chronology import KINDS, resolve
 from .figures import draw_figure, preferred_width
-from .model import LayoutError, ensure, validate, validate_importance
+from .model import (
+    LayoutError,
+    ensure,
+    figure_text_fields,
+    validate,
+    validate_importance,
+)
 from .placement import ROW_GAP, place_rows
 from .routing import (
     NORMALS,
@@ -24,7 +32,13 @@ from .routing import (
     port_point,
     route_edges,
 )
-from .typography import display_text, measure, missing_glyphs, text_lines
+from .typography import (
+    display_text,
+    measure,
+    missing_display_glyphs,
+    missing_glyphs,
+    text_lines,
+)
 
 STATUS_JA = {
     "verified": "検証済み",
@@ -70,6 +84,7 @@ NODE_W = 205
 GUTTER = 34
 LEGEND = (
     "過去 ↑　未来 ↓　　太い線ほど歴史的に重要\n"
+    "推定＝根拠に基づく年代範囲　配置目安＝資料で確認できる先後関係\n"
     "等間隔の破線＝仮説　長短の破線＝論争中　長い破線＝有力説　点線＝未検証"
 )
 RELATION_STYLES = {
@@ -103,29 +118,72 @@ def _edge_style(relation, level, assessments):
     }
 
 
+def _matching_dates(node, year):
+    kind = node["display_date"].get("kind")
+    for index, date in enumerate(node["dates"]):
+        lo, hi = date.get("earliest"), date.get("latest")
+        if (
+            (kind is None or date.get("kind") == kind)
+            and date.get("status", "confirmed") == "confirmed"
+            and (lo is not None or hi is not None)
+            and (lo is None or lo <= year)
+            and (hi is None or year <= hi)
+        ):
+            yield index, date
+
+
+def _range_text(lo, hi):
+    if lo is None:
+        return date_text(hi) + "以前"
+    if hi is None:
+        return date_text(lo) + "以降"
+    if lo == hi:
+        return date_text(lo)
+    return f"{date_text(lo)}〜{date_text(hi)}"
+
+
 def _date_label(node, year):
     if year is None:
         return date_text(year)
     date = node["display_date"]
-    matching = [
-        d
-        for d in node["dates"]
-        if d.get("earliest") is not None and d["earliest"] <= year <= d["latest"]
-    ]
+    placement = node.get("date_placement", {})
+    kind = date.get("kind")
+    if date["mode"] in ("estimated", "sequence"):
+        prefix = "推定" if date["mode"] == "estimated" else "配置目安"
+        span = _range_text(placement["earliest"], placement["latest"])
+        return f"{prefix}（{KINDS[kind]}） {span}"
     dates = list(
         dict.fromkeys(
-            d.get("label") or f"{date_text(d['earliest'])}〜{date_text(d['latest'])}"
-            for d in matching
-            if d.get("label") or d["earliest"] != d["latest"]
+            d.get("label") or _range_text(d.get("earliest"), d.get("latest"))
+            for _, d in _matching_dates(node, year)
+            if d.get("label") or d.get("earliest") != d.get("latest")
         )
     )
     label = date_text(year)
     if dates:
-        return " / ".join(dates)
-    reason = str(date.get("anchor_reason", ""))
-    if any(word in reason for word in ("概年", "頃", "推定", "暫定")):
-        return f"{label}頃"
-    return label
+        label = " / ".join(dates)
+    elif any(
+        word in str(date.get("anchor_reason", ""))
+        for word in ("概年", "頃", "推定", "暫定")
+    ):
+        label += "頃"
+    return f"{KINDS[kind]} {label}" if kind else label
+
+
+def _axis_labels(years, nodes):
+    by_year = defaultdict(set)
+    for node in nodes:
+        by_year[node["anchor_year"]].add(
+            node.get("display_date", {}).get("mode", "anchored")
+        )
+    return [
+        date_text(year)
+        if year is None or "anchored" in by_year[year]
+        else "推定年代帯"
+        if "estimated" in by_year[year]
+        else "先後関係の配置帯"
+        for year in [*years, None]
+    ]
 
 
 def date_text(year):
@@ -142,6 +200,118 @@ def _footer(node):
     return " ".join(value for value in (node["date_label"], nums, statuses) if value)
 
 
+def _shown(record, field, default=None):
+    return record.get("display", {}).get(field, record.get(field, default))
+
+
+def _asset_credit_fields(record):
+    caption_field = "caption" if _shown(record, "caption") else "title"
+    return (
+        (caption_field, _shown(record, caption_field)),
+        ("creator", _shown(record, "creator")),
+        ("license", record.get("license")),
+        ("rights_note", _shown(record, "rights_note")),
+    )
+
+
+def _asset_caption(record, related_labels, *, label_generated=True):
+    caption, *credits = (text for _, text in _asset_credit_fields(record))
+    if (
+        label_generated
+        and record.get("asset_type") == "generated"
+        and not caption.startswith("解説図")
+    ):
+        caption = "解説図｜" + caption
+    return "　".join(filter(None, (caption, related_labels, *credits))) or record["id"]
+
+
+def _display_figure(record):
+    figure = record["figure"]
+    overrides = {
+        path: text
+        for path, text in record.get("display", {}).items()
+        if path.startswith("figure.")
+    }
+    if not overrides:
+        return figure
+    figure = deepcopy(figure)
+    for path, text in overrides.items():
+        *parts, last = path.split(".")[1:]
+        parent = figure
+        for part in parts:
+            parent = parent[int(part) if isinstance(parent, list) else part]
+        parent[int(last) if isinstance(parent, list) else last] = text
+    return figure
+
+
+def _registered_assets(data, node_ids):
+    for record in data.get("assets", []):
+        owners = _asset_owners(record)
+        if not owners or owners & node_ids:
+            yield record
+
+
+def check_font_coverage(data, title="歴史知識地図", run_id=None):
+    """Check rendered content in a validated graph without laying out the map."""
+    nodes = {
+        n["id"]: n for n in data.get("nodes", []) if n["adoption_status"] == "adopted"
+    }
+    edges = {
+        e["id"]: e for e in data.get("edges", []) if e["adoption_status"] == "adopted"
+    }
+    claims = {c["id"]: c for c in data.get("claims", [])}
+    evidence = {e["id"]: e for e in data.get("evidence", [])}
+    sources = dict.fromkeys(
+        eid
+        for record in chain(nodes.values(), edges.values())
+        for eid in _evidence_ids(record, claims)
+    )
+    issues = []
+
+    def check(record_id, field, value):
+        glyphs = missing_display_glyphs(value)
+        if glyphs:
+            issues.append({"record_id": record_id, "field": field, "glyphs": glyphs})
+
+    def check_field(record, field, default=None):
+        shown_field = (
+            f"display.{field}" if field in record.get("display", {}) else field
+        )
+        check(record["id"], shown_field, _shown(record, field, default))
+
+    check(run_id or "map", "title", title)
+    for node in nodes.values():
+        for field in ("label", "summary"):
+            check_field(node, field)
+        date = node["display_date"]
+        for field in ("uncertainty", "reason"):
+            check(node["id"], f"display_date.{field}", date.get(field))
+        if date["mode"] == "anchored":
+            for index, assertion in _matching_dates(node, date["anchor_year"]):
+                check(node["id"], f"dates.{index}.label", assertion.get("label"))
+    for eid in sources:
+        for field in ("title", "locator", "source_url"):
+            check_field(evidence[eid], field)
+    for asset in _registered_assets(data, nodes.keys()):
+        for field, _ in _asset_credit_fields(asset):
+            check_field(asset, field)
+        if asset.get("asset_type") == "generated":
+            figure = asset["figure"]
+            for field, value in figure_text_fields(figure):
+                check_field(asset, field, value)
+            if figure["kind"] in ("relations", "lineage", "composition"):
+                for edge_id in figure["edge_ids"]:
+                    check_field(edges[edge_id], "label")
+    if issues:
+        glyphs = sorted({glyph for issue in issues for glyph in issue["glyphs"]})
+        raise LayoutError(
+            "font_coverage",
+            f"missing font glyphs: {''.join(glyphs)}",
+            glyphs=glyphs,
+            fields=issues,
+        )
+
+
 def _source_caption(ref):
     return " ".join(
         str(value)
@@ -155,8 +325,13 @@ def _source_caption(ref):
     )
 
 
-def _evidence_ids(record, claims):
-    for cid in record["claim_ids"]:
+def _evidence_ids(record, claims, edges=None):
+    ids = list(record["claim_ids"])
+    date = record.get("display_date", {})
+    if date.get("mode") == "sequence" and edges is not None:
+        for edge_id in date["edge_ids"]:
+            ids.extend(edges[edge_id]["chronology"]["basis_claim_ids"])
+    for cid in ids:
         claim = claims[cid]
         yield from claim["supporting_evidence_ids"]
         yield from claim["contradicting_evidence_ids"]
@@ -164,6 +339,13 @@ def _evidence_ids(record, claims):
 
 def _end(lines):
     return lines[-1]["bbox"][1] + lines[-1]["bbox"][3]
+
+
+def _date_note(node):
+    date = node.get("display_date", {})
+    return date.get("uncertainty") or (
+        date.get("reason") if date.get("mode") == "unknown" else None
+    )
 
 
 def _node_lines(node):
@@ -175,6 +357,7 @@ def _node_lines(node):
         ("title", node["label"], title_size, node["color"], 0),
         ("body", node["summary"], 9.5, "#243747", 6),
         ("footer", _footer(node), 8.5, "#526474", 7),
+        ("date_note", _date_note(node), 8.5, "#526474", 4),
     ):
         if display_text(text):
             lines.extend(
@@ -257,10 +440,8 @@ def _asset_image(record, run_dir):
 
 def _prepare_assets(nodes, data, run_dir, evidence):
     assets = []
-    for record in data.get("assets", []):
+    for record in _registered_assets(data, nodes.keys()):
         owners = _asset_owners(record) & nodes.keys()
-        if _asset_owners(record) and not owners:
-            continue
         owner_ids = sorted(
             owners,
             key=lambda key: (
@@ -272,13 +453,25 @@ def _prepare_assets(nodes, data, run_dir, evidence):
         for key in owner_ids:
             nodes[key]["asset_refs"].append(record["id"])
         primary = (
-            owner_ids[0] if owner_ids and record.get("placement") != "gallery" else None
+            owner_ids[0]
+            if owner_ids and record.get("placement") not in ("gallery", "band")
+            else None
         )
         try:
             image = _asset_image(record, run_dir)
         except (OSError, ValueError, KeyError, ImportError) as exc:
             raise LayoutError("asset_image", f"{record['id']}: {exc}") from exc
         asset = {"id": record["id"], "record": record, "owner_id": primary}
+        if record.get("placement") == "band":
+            year = next(
+                (
+                    nodes[key]["anchor_year"]
+                    for key in owner_ids
+                    if nodes[key]["anchor_year"] is not None
+                ),
+                None,
+            )
+            asset["band_year"] = year
         if image:
             raw, mime, size = image
             asset.update(
@@ -308,14 +501,9 @@ def _prepare_assets(nodes, data, run_dir, evidence):
         )
         asset["source_urls"] = list(dict.fromkeys(url for url in urls if url))
         others = owner_ids[1:] if primary else owner_ids
-        credit = [
-            record.get("caption") or record.get("title"),
-            "・".join(nodes[key]["label"] for key in others),
-            record.get("creator"),
-            record.get("license"),
-            record.get("rights_note"),
-        ]
-        asset["caption"] = "　".join(filter(None, credit)) or record["id"]
+        asset["caption"] = _asset_caption(
+            record, "・".join(nodes[key]["label"] for key in others)
+        )
         assets.append(asset)
     return assets
 
@@ -339,7 +527,7 @@ def _layout_asset(asset, x, cursor, width, max_height, nodes, edges):
     diagram_lines = []
     if asset["record"].get("asset_type") == "generated":
         shapes, diagram_lines, end = draw_figure(
-            asset["record"]["figure"], x, cursor, width, nodes, edges
+            _display_figure(asset["record"]), x, cursor, width, nodes, edges
         )
         asset.update(shapes=shapes, figure_bbox=[x, cursor, width, end - cursor])
         cursor = end + 8
@@ -382,7 +570,8 @@ def _move_asset(asset, x, y):
 def layout(
     data, run_id="run_manual", title="歴史知識地図", importance=None, *, run_dir=None
 ):
-    checked = validate(data)
+    checked = validate(data, include_placements=True)
+    check_font_coverage(data, title, run_id)
     nodes = [n for n in data.get("nodes", []) if n["adoption_status"] == "adopted"]
     edges = [e for e in data.get("edges", []) if e["adoption_status"] == "adopted"]
     if importance is None:
@@ -410,21 +599,22 @@ def layout(
         {
             "number": number,
             "evidence_id": eid,
-            "title": evidence[eid]["title"],
+            "title": _shown(evidence[eid], "title"),
             "source_url": evidence[eid].get("source_url"),
-            "locator": evidence[eid].get("locator", ""),
+            "locator": _shown(evidence[eid], "locator", ""),
         }
         for eid, number in reference_numbers.items()
     ]
 
     positions = {}
+    edge_index = {edge["id"]: edge for edge in edges}
     edge_weights = {
         e["id"]: importance.get(e["id"], e.get("importance", DEFAULT_IMPORTANCE)).copy()
         for e in edges
     }
     for n in nodes:
-        date = n["display_date"]
-        year = date.get("anchor_year") if date["mode"] == "anchored" else None
+        placement = checked["chronology"][n["id"]]
+        year = placement["anchor_year"]
         lane = LANE_BY_TYPE[n["type"]]
         weight = importance.get(n["id"], n.get("importance", DEFAULT_IMPORTANCE)).copy()
         color = PALETTE[n["type"]]
@@ -433,9 +623,9 @@ def layout(
             "node_id": n["id"],
             "category_id": lane,
             "anchor_year": year,
-            "label": n["label"],
-            "summary": n["summary"],
-            "date_label": _date_label(n, year),
+            "label": _shown(n, "label"),
+            "summary": _shown(n, "summary"),
+            "date_placement": placement,
             "display_date": n["display_date"],
             "dates": n["dates"],
             "type": n["type"],
@@ -446,7 +636,11 @@ def layout(
                 {claims[cid]["assessment"] for cid in n["claim_ids"]}
             ),
             "source_numbers": sorted(
-                {reference_numbers[eid] for eid in _evidence_ids(n, claims)}, key=int
+                {
+                    reference_numbers[eid]
+                    for eid in _evidence_ids(n, claims, edge_index)
+                },
+                key=int,
             ),
             "asset_refs": [],
             "z_index": 2,
@@ -456,6 +650,7 @@ def layout(
                 "width": LEVEL_STYLE[weight["level"] - 1][3],
             },
         }
+        node["date_label"] = _date_label(node, year)
         positions[n["id"]] = node
 
     graph_edges = {
@@ -468,9 +663,12 @@ def layout(
         for edge in edges
     }
     assets = _prepare_assets(positions, data, run_dir, evidence)
-    by_owner = defaultdict(list)
+    by_owner, by_band = defaultdict(list), defaultdict(list)
     for asset in assets:
-        by_owner[asset["owner_id"]].append(asset)
+        if "band_year" in asset:
+            by_band[asset["band_year"]].append(asset)
+        else:
+            by_owner[asset["owner_id"]].append(asset)
     groups = defaultdict(list)
     for node in positions.values():
         w, h, lines = _node_lines(node)
@@ -490,18 +688,38 @@ def layout(
             )
         node.update(bbox=[0, 0, w, h], text_lines=lines)
         groups[node["anchor_year"]].append(node)
+    for year, panels in by_band.items():
+        for asset in panels:
+            panel_width = max(460, asset["preferred_width"])
+            panel_height = _layout_asset(
+                asset, 0, 0, panel_width, 240, positions, graph_edges
+            )
+            groups[year].append(
+                {
+                    "node_id": asset["id"],
+                    "anchor_year": year,
+                    "importance": DEFAULT_IMPORTANCE,
+                    "bbox": [0, 0, panel_width, panel_height],
+                    "panel": asset,
+                }
+            )
     years = sorted(year for year in groups if year is not None)
     chronology = {
         year: max(78, 80 * math.asinh((later - year) / 25))
-        for year, later in zip(years, years[1:])
+        for year, later in pairwise(years)
     }
     for year in [*years, None]:
         chronology.setdefault(year, 78 if year is not None else 0)
-    axis_labels = [date_text(year) for year in [*years, None]]
+    axis_labels = _axis_labels(years, positions.values())
     gutter_left = max(105, max(measure(label, 10)[2] for label in axis_labels) + 35)
     content_x = gutter_left + GUTTER
     content_floor = max(
-        (asset.get("preferred_width", 0) for asset in by_owner[None]), default=0
+        (
+            asset.get("preferred_width", 0)
+            for asset in assets
+            if asset["owner_id"] is None
+        ),
+        default=0,
     )
     bands, content_width = place_rows(
         {year: groups[year] for year in [*years, None]},
@@ -553,7 +771,7 @@ def layout(
         if year is not None:
             anchors.append([year, y])
         label = text_lines(
-            date_text(year), 9, y - 19, gutter_left - 20, 10, "#526474", "axis_label"
+            axis_labels[i], 9, y - 19, gutter_left - 20, 10, "#526474", "axis_label"
         )[0]
         markers.append(label)
         obstacles[f"axis:{year}"] = label["bbox"]
@@ -566,6 +784,11 @@ def layout(
                 # Stagger shorter cards slightly within a row, keeping every
                 # rectangle strictly inside the same chronological band.
                 top = cursor + min(14, (row_height - h) / 2)
+                if "panel" in node:
+                    panel = node["panel"]
+                    _move_asset(panel, x, top)
+                    obstacles[panel["id"]] = panel["reserved_bbox"]
+                    continue
                 node.update(bbox=[x, top, w, h], anchor=[x + w / 2, y])
                 shelves[node["node_id"]] = (cursor - 16, cursor + row_height + 16)
                 if top > y:
@@ -725,7 +948,7 @@ def _same_port(a, b):
 
 
 def _check_graph_content(scene, graph_nodes, graph_edges, data):
-    flexible = scene["layout_revision"] == 3
+    flexible = scene["layout_revision"] in (3, 4)
     overrides = scene.get("importance_overrides", {})
     if flexible:
         _require(
@@ -749,20 +972,32 @@ def _check_graph_content(scene, graph_nodes, graph_edges, data):
     for eid, ref in refs.items():
         _require(
             all(
-                ref[field] == evidence[eid].get(field)
+                ref[field] == _shown(evidence[eid], field)
                 for field in ("title", "locator", "source_url")
             ),
             "source_text",
             f"{eid}: source differs from graph",
             evidence_id=eid,
         )
+    placements = resolve(
+        {n["id"]: n for n in data["nodes"]},
+        {e["id"]: e for e in data["edges"]},
+        claims,
+        evidence,
+    )
     for n in scene["nodes"]:
         key = n["node_id"]
         record = graph_nodes[key]
         year = record["display_date"]
         _require(
-            n["anchor_year"]
-            == (year["anchor_year"] if year["mode"] == "anchored" else None),
+            n["anchor_year"] == placements[key]["anchor_year"]
+            and (
+                n.get("date_placement") == placements[key]
+                or (
+                    "date_placement" not in n
+                    and year["mode"] in ("anchored", "unknown")
+                )
+            ),
             "chronology",
             f"{key}: anchor year differs from graph",
             node_id=key,
@@ -778,10 +1013,13 @@ def _check_graph_content(scene, graph_nodes, graph_edges, data):
                 node_id=key,
             )
         nums = sorted(
-            {refs[eid]["number"] for eid in _evidence_ids(record, claims)}, key=int
+            {refs[eid]["number"] for eid in _evidence_ids(record, claims, graph_edges)},
+            key=int,
         )
         _require(
-            all(n[field] == record[field] for field in ("label", "summary", "type"))
+            n["label"] == _shown(record, "label")
+            and n["summary"] == _shown(record, "summary")
+            and n["type"] == record["type"]
             and n["claim_refs"] == record["claim_ids"]
             and n["source_numbers"] == nums
             and n["assessments"]
@@ -818,9 +1056,7 @@ def _check_inline_assets(scene, nodes, data, canvas, inline):
     _require(len(assets) == len(by_id), "asset_ids", "duplicate illustration IDs")
     if data is not None:
         registered = {
-            record["id"]: record
-            for record in data.get("assets", [])
-            if not _asset_owners(record) or _asset_owners(record) & nodes.keys()
+            record["id"]: record for record in _registered_assets(data, nodes.keys())
         }
         _require(
             by_id == registered, "asset_ids", "registered assets differ from scene"
@@ -829,7 +1065,9 @@ def _check_inline_assets(scene, nodes, data, canvas, inline):
         if not items:
             continue
         _require(
-            owner is None or owner in nodes, "asset_owner", "unknown illustration owner"
+            owner is None or owner in nodes or isinstance(owner, tuple),
+            "asset_owner",
+            "unknown illustration owner",
         )
         node = nodes.get(owner)
         limit = (
@@ -840,6 +1078,8 @@ def _check_inline_assets(scene, nodes, data, canvas, inline):
         cursor = (
             _end(node["text_lines"])
             if node
+            else 0
+            if isinstance(owner, tuple)
             else max(
                 [scene["sources_y"], scene["gallery_y"]]
                 + [_end(ref["text_lines"]) for ref in scene["sources"]]
@@ -851,7 +1091,13 @@ def _check_inline_assets(scene, nodes, data, canvas, inline):
             owners = _asset_owners(record) & nodes.keys()
             _require(
                 (
-                    owner is None
+                    (
+                        isinstance(owner, tuple)
+                        and asset["owner_id"] is None
+                        and owner[1] in {nodes[k]["anchor_year"] for k in owners}
+                    )
+                    if record.get("placement") == "band"
+                    else owner is None
                     if record.get("placement") == "gallery"
                     else ({owner} <= owners if owners else owner is None)
                 )
@@ -863,7 +1109,7 @@ def _check_inline_assets(scene, nodes, data, canvas, inline):
             area = asset["reserved_bbox"]
             _require(
                 min(area[2:]) > 0
-                and area[1] >= cursor
+                and (isinstance(owner, tuple) or area[1] >= cursor)
                 and _inside(padded(area, 0), limit),
                 "asset_bounds",
                 f"{key}: illustration outside reserved area",
@@ -888,7 +1134,7 @@ def _check_inline_assets(scene, nodes, data, canvas, inline):
                     for e in scene["edges"]
                 }
                 shapes, lines, _ = draw_figure(
-                    record["figure"], box[0], box[1], box[2], nodes, graph_edges
+                    _display_figure(record), box[0], box[1], box[2], nodes, graph_edges
                 )
                 actual = asset.get("shapes", [])
                 _require(
@@ -948,8 +1194,24 @@ def _check_inline_assets(scene, nodes, data, canvas, inline):
                     if line["role"] == "asset_source"
                 )
             )
+            owner_ids = sorted(
+                owners - {owner},
+                key=lambda key: (
+                    key != record.get("node_id"),
+                    -nodes[key]["importance"]["level"],
+                    key,
+                ),
+            )
+            expected_caption = _asset_caption(
+                record,
+                "・".join(nodes[key]["label"] for key in owner_ids),
+                label_generated=all(
+                    "date_placement" in node for node in nodes.values()
+                ),
+            )
             _require(
-                caption == display_text(asset["caption"])
+                caption == display_text(expected_caption)
+                and asset["caption"] == expected_caption
                 and urls == asset["source_urls"],
                 "asset_text",
                 f"{key}: caption or credits missing",
@@ -1018,7 +1280,7 @@ def check_scene(scene, data=None):
         set(anchors)
         == {n["anchor_year"] for n in nodes.values() if n["anchor_year"] is not None}
         and [line["text"] for line in axis["labels"]]
-        == [date_text(year) for year in [*anchors, None]],
+        == _axis_labels(anchors, nodes.values()),
         "chronology",
         "axis labels and node dates do not match",
     )
@@ -1041,7 +1303,33 @@ def check_scene(scene, data=None):
             "missing illustration layout",
         )
         for asset in scene["assets"]:
-            inline[asset["owner_id"]].append(asset)
+            if "band_year" in asset:
+                year = asset["band_year"]
+                anchor = axis["unknown_y"] if year is None else anchors.get(year)
+                box = asset["reserved_bbox"]
+                _require(
+                    anchor is not None
+                    and anchor <= box[1]
+                    and box[1] + box[3] <= band_limits[anchor]
+                    and all(
+                        not intersects(padded(box, 0), padded(n["bbox"], 0))
+                        for n in nodes.values()
+                    ),
+                    "asset_bounds",
+                    f"{asset['id']}: band figure overlaps a node or leaves its band",
+                )
+                _require(
+                    not any(
+                        intersects(padded(box, 0), padded(other["reserved_bbox"], 0))
+                        for other in inline[("band", year)]
+                    ),
+                    "asset_bounds",
+                    f"{asset['id']}: overlapping band figures",
+                )
+                inline[("band", year)].append(asset)
+                obstacles[asset["id"]] = box
+            else:
+                inline[asset["owner_id"]].append(asset)
     active = []
     lanes = {lane["id"]: lane for lane in scene.get("lane_definitions", [])}
     for n in sorted(nodes.values(), key=lambda node: node["bbox"][1]):

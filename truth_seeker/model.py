@@ -102,7 +102,51 @@ def is_id(x, prefix):
     return isinstance(x, str) and x.startswith(prefix) and len(x) > len(prefix)
 
 
-def validate(records_by_type):
+DISPLAY_FIELDS = {
+    "nodes": ("label", "summary"),
+    "evidence": ("title", "locator"),
+    "assets": ("caption", "creator", "rights_note"),
+}
+
+
+def figure_text_fields(figure):
+    """Yield field paths and original strings for user-supplied figure text."""
+    kind = figure["kind"]
+    if kind == "table":
+        for i, text in enumerate(figure["columns"]):
+            yield f"figure.columns.{i}", text
+        for i, row in enumerate(figure["rows"]):
+            for j, text in enumerate(row["cells"]):
+                yield f"figure.rows.{i}.cells.{j}", text
+    elif kind in ("bar", "distribution"):
+        if kind == "bar":
+            yield "figure.unit", figure["unit"]
+        for i, row in enumerate(figure["rows"]):
+            yield f"figure.rows.{i}.label", row["label"]
+
+
+def _validate_display(record, group):
+    if "display" not in record:
+        return
+    fields = DISPLAY_FIELDS.get(group, ())
+    if group == "assets" and record.get("asset_type") == "generated":
+        fields = (
+            *fields,
+            *(field for field, _ in figure_text_fields(record["figure"])),
+        )
+    display = record["display"]
+    ensure(isinstance(display, dict), f"{record['id']}: display must be an object")
+    for key, value in display.items():
+        ensure(key in fields, f"{record['id']}: unsupported display field {key}")
+        ensure(
+            isinstance(value, str) and bool(value.strip()),
+            f"{record['id']}: display.{key} must be nonblank text",
+        )
+
+
+def validate(records_by_type, *, include_placements=False):
+    from .chronology import KINDS, resolve, valid_bounds
+
     data = {k: list(records_by_type.get(k, [])) for k in FILES}
     prefix = {
         "nodes": "node_",
@@ -159,7 +203,10 @@ def validate(records_by_type):
         if "importance" in n:
             validate_importance(n["importance"], n["id"])
         d = n["display_date"]
-        ensure(d.get("mode") in ("anchored", "unknown"), f"{n['id']}: bad display mode")
+        ensure(
+            d.get("mode") in ("anchored", "unknown", "estimated", "sequence"),
+            f"{n['id']}: bad display mode",
+        )
         if d["mode"] == "anchored":
             ensure(
                 type(d.get("anchor_year")) in (int, float)
@@ -170,12 +217,16 @@ def validate(records_by_type):
             ensure(isinstance(dt, dict), f"{n['id']}: date assertion")
             a, b = dt.get("earliest"), dt.get("latest")
             ensure(
-                (a is None and b is None)
-                or (
-                    isinstance(a, (int, float))
-                    and isinstance(b, (int, float))
-                    and a <= b
-                ),
+                dt.get("kind") is None
+                or (isinstance(dt["kind"], str) and dt["kind"] in KINDS),
+                f"{n['id']}: invalid date assertion kind",
+            )
+            ensure(
+                dt.get("status", "confirmed") in ("confirmed", "estimated"),
+                f"{n['id']}: invalid date assertion status",
+            )
+            ensure(
+                valid_bounds(a, b),
                 f"{n['id']}: date bounds",
             )
             ensure(
@@ -274,6 +325,7 @@ def validate(records_by_type):
             ev["access_status"] in {"accessible", "inaccessible", "partial", "unknown"},
             f"{ev['id']}: access",
         )
+    chronology = resolve(nodes, edges, claims, evidence)
     for m in data["merge_history"]:
         required(m, ["from_id", "to_id", "reason", "generation"], "merge_history")
     for asset in data["assets"]:
@@ -325,12 +377,26 @@ def validate(records_by_type):
                 and bool((asset.get("caption") or asset.get("title")).strip()),
                 f"{key}: illustration requires a caption",
             )
+            if asset.get("placement") == "band":
+                ensure(
+                    kind == "generated"
+                    and len(
+                        set(owners)
+                        | ({asset["node_id"]} if "node_id" in asset else set())
+                    )
+                    >= 2,
+                    f"{key}: band figures need multiple related nodes",
+                )
             if kind == "generated":
                 from .figures import validate_figure
 
-                validate_figure(asset, nodes, edges, evidence, claims)
+                validate_figure(asset, nodes, edges, evidence, claims, chronology)
+    for group, items in data.items():
+        for item in items:
+            _validate_display(item, group)
     return {
         "counts": {k: len(v) for k, v in data.items()},
+        **({"chronology": chronology} if include_placements else {}),
         "adopted_node_ids": sorted(
             k for k, v in nodes.items() if v["adoption_status"] == "adopted"
         ),
