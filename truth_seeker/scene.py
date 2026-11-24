@@ -170,20 +170,33 @@ def _date_label(node, year):
     return f"{KINDS[kind]} {label}" if kind else label
 
 
+def _agreed_calendar_label(group):
+    labels = []
+    for node in group:
+        label = node.get("date_label")
+        if isinstance(label, str) and label.strip():
+            labels.append(label)
+    if len(set(labels)) == 1 and labels:
+        return labels[0]
+    return None
+
+
 def _axis_labels(years, nodes):
-    by_year = defaultdict(set)
+    by_year = defaultdict(list)
     for node in nodes:
-        by_year[node["anchor_year"]].add(
-            node.get("display_date", {}).get("mode", "anchored")
-        )
-    return [
-        date_text(year)
-        if year is None or "anchored" in by_year[year]
-        else "推定年代帯"
-        if "estimated" in by_year[year]
-        else "先後関係の配置帯"
-        for year in [*years, None]
-    ]
+        by_year[node["anchor_year"]].append(node)
+    labels = []
+    for year in [*years, None]:
+        group = by_year[year]
+        modes = {node.get("display_date", {}).get("mode", "anchored") for node in group}
+        if year is None or "anchored" in modes:
+            agreed = None if year is None else _agreed_calendar_label(group)
+            labels.append(agreed or date_text(year))
+        elif "estimated" in modes:
+            labels.append("推定年代帯")
+        else:
+            labels.append("先後関係の配置帯")
+    return labels
 
 
 def date_text(year):

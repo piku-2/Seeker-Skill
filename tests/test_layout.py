@@ -300,11 +300,14 @@ def test_existing_rust_map(tmp_path):
     assert emit(scene, tmp_path)["primary_format"] == "pdf"
 
 
-@pytest.mark.parametrize("axis,extent,primary", [
-    ("canvas_height", 17500, "pdf"),
-    ("canvas_width", 17500, "pdf"),
-    ("canvas_height", 28000, "svg"),
-])
+@pytest.mark.parametrize(
+    "axis,extent,primary",
+    [
+        ("canvas_height", 17500, "pdf"),
+        ("canvas_width", 17500, "pdf"),
+        ("canvas_height", 28000, "svg"),
+    ],
+)
 def test_pdf_scales_geometry_text_and_links(tmp_path, axis, extent, primary):
     import pymupdf
 
@@ -321,24 +324,39 @@ def test_pdf_scales_geometry_text_and_links(tmp_path, axis, extent, primary):
     with pymupdf.open(tmp_path / "map.pdf") as doc:
         page = doc[0]
         assert len(doc) == 1 and max(page.rect.width, page.rect.height) == 14000
-        for link, line in zip(page.get_links(), scene["sources"][0]["text_lines"], strict=True):
+        for link, line in zip(
+            page.get_links(), scene["sources"][0]["text_lines"], strict=True
+        ):
             x, y, w, h = line["bbox"]
             assert tuple(link["from"]) == pytest.approx(
-                [v * scale for v in (x, y, x+w, y+h)], abs=.02)
+                [v * scale for v in (x, y, x + w, y + h)], abs=0.02
+            )
         drawings = page.get_drawings()
         edge = scene["edges"][0]
-        path = next(d for d in drawings if any(item[0] == "c" for item in d["items"])
-                    and d["width"] == pytest.approx(edge["style"]["width"] * scale))
+        path = next(
+            d
+            for d in drawings
+            if any(item[0] == "c" for item in d["items"])
+            and d["width"] == pytest.approx(edge["style"]["width"] * scale)
+        )
         assert tuple(path["items"][0][1]) == pytest.approx(
-            [v * scale for v in edge["path"][0]], abs=.02)
-        arrow = next(d for d in drawings if d["type"] == "f" and d["fill"] == pytest.approx((112/255,131/255,152/255)))
+            [v * scale for v in edge["path"][0]], abs=0.02
+        )
+        arrow = next(
+            d
+            for d in drawings
+            if d["type"] == "f"
+            and d["fill"] == pytest.approx((112 / 255, 131 / 255, 152 / 255))
+        )
         assert tuple(arrow["items"][0][1]) == pytest.approx(
-            [v * scale for v in edge["arrow"][0]], abs=.02)
+            [v * scale for v in edge["arrow"][0]], abs=0.02
+        )
         assert scene["nodes"][0]["label"] in page.get_text()
 
 
 def test_pdf_verification_detects_moved_link_and_missing_text(tmp_path):
     import pymupdf
+
     from truth_seeker.render import _check_pdf, render_pdf
 
     data = sample()
@@ -369,15 +387,22 @@ def test_pdf_verification_detects_moved_link_and_missing_text(tmp_path):
 def test_registered_illustration_visibility_credit_and_placement(tmp_path):
     import base64
     import io
+
     import pymupdf
     from PIL import Image
 
     data = sample()
     image = Image.new("RGB", (30, 20), "#d51c56")
     image.save(tmp_path / "plate.png")
-    asset = dict(id="asset_plate", schema_version="0.5", local_path="plate.png",
-                 related_node_ids=["node_old"], caption="図版", rights_note="CC0",
-                 source_url="https://example.org/plate")
+    asset = dict(
+        id="asset_plate",
+        schema_version="0.5",
+        local_path="plate.png",
+        related_node_ids=["node_old"],
+        caption="図版",
+        rights_note="CC0",
+        source_url="https://example.org/plate",
+    )
     data["assets"] = [asset]
     scene = layout(data, run_dir=tmp_path)
     plate = scene["assets"][0]
@@ -394,8 +419,8 @@ def test_registered_illustration_visibility_credit_and_placement(tmp_path):
         assert decoded.getpixel((15, 10)) == image.getpixel((15, 10))
     with pymupdf.open(tmp_path / "map.pdf") as doc:
         page = doc[0]
-        pix = page.get_pixmap(clip=pymupdf.Rect(x, y, x+w, y+h))
-        assert pix.pixel(pix.width//2, pix.height//2) == image.getpixel((15, 10))
+        pix = page.get_pixmap(clip=pymupdf.Rect(x, y, x + w, y + h))
+        assert pix.pixel(pix.width // 2, pix.height // 2) == image.getpixel((15, 10))
         assert "CC0" in page.get_text()
         assert asset["source_url"] in [link["uri"] for link in page.get_links()]
     plate["bbox"] = node(scene)["bbox"]
@@ -405,8 +430,13 @@ def test_registered_illustration_visibility_credit_and_placement(tmp_path):
 
 def test_reference_only_and_missing_registered_file(tmp_path):
     data = sample()
-    entry = dict(id="asset_ref", schema_version="0.5", asset_type="external_reference",
-                 source_url="https://example.org/source", rights_note="参照のみ")
+    entry = dict(
+        id="asset_ref",
+        schema_version="0.5",
+        asset_type="external_reference",
+        source_url="https://example.org/source",
+        rights_note="参照のみ",
+    )
     data["assets"] = [entry]
     ref = layout(data)["assets"][0]
     assert "image_data" not in ref and ref["record"]["rights_note"] == "参照のみ"
@@ -417,11 +447,12 @@ def test_reference_only_and_missing_registered_file(tmp_path):
 
 
 def test_recover_and_rerender_registered_embedded_figure(tmp_path):
-    import json
-    import pymupdf
-    from PIL import Image
     import base64
     import io
+    import json
+
+    import pymupdf
+    from PIL import Image
 
     old = tmp_path / "render"
     old.mkdir()
@@ -429,17 +460,99 @@ def test_recover_and_rerender_registered_embedded_figure(tmp_path):
         page = pdf.new_page(width=200, height=150)
         page.draw_rect((12, 12, 23, 23), fill=(1, 0, 0))
         pdf.save(old / "map.pdf")
-    (old / "scene.json").write_text(json.dumps({
-        "canvas_width": 400, "canvas_height": 300,
-        "figure": {"asset_id": "asset_diagram", "node_id": "node_old",
-                   "bbox": [20, 20, 30, 30]},
-    }))
+    (old / "scene.json").write_text(
+        json.dumps(
+            {
+                "canvas_width": 400,
+                "canvas_height": 300,
+                "figure": {
+                    "asset_id": "asset_diagram",
+                    "node_id": "node_old",
+                    "bbox": [20, 20, 30, 30],
+                },
+            }
+        )
+    )
     data = sample()
-    data["assets"] = [dict(id="asset_diagram", schema_version="0.5", node_id="node_old",
-                           type="diagram", title="模式図", rights_note="自作")]
+    data["assets"] = [
+        dict(
+            id="asset_diagram",
+            schema_version="0.5",
+            node_id="node_old",
+            type="diagram",
+            title="模式図",
+            rights_note="自作",
+        )
+    ]
     scene = layout(data, run_dir=tmp_path)
     payload = scene["assets"][0]["image_data"]
     with Image.open(io.BytesIO(base64.b64decode(payload))) as decoded:
-        assert decoded.getpixel((decoded.width//2, decoded.height//2)) == (255, 0, 0)
+        assert decoded.getpixel((decoded.width // 2, decoded.height // 2)) == (
+            255,
+            0,
+            0,
+        )
     assert emit(scene, old)["primary_format"] == "pdf"
     assert layout(data, run_dir=tmp_path)["assets"][0]["image_data"] == payload
+
+
+def test_axis_label_uses_shared_calendar_text():
+    data = sample()
+    data["evidence"][0]["access_status"] = "accessible"
+    data["claims"][0]["assessment"] = "verified"
+    march = add_node(data, "node_march", 1926.21)
+    march["dates"] = [
+        {
+            "kind": "event",
+            "label": "1926年3月16日",
+            "earliest": 1926.21,
+            "latest": 1926.21,
+            "status": "confirmed",
+        }
+    ]
+    march["display_date"] = {
+        "mode": "anchored",
+        "anchor_year": 1926.21,
+        "kind": "event",
+        "anchor_reason": "1926年3月16日",
+    }
+    for identifier, text in (
+        ("node_landing", "1969年7月20日"),
+        ("node_return", "1969年7月24日"),
+    ):
+        record = add_node(data, identifier, 1969.55)
+        record["dates"] = [
+            {
+                "label": text,
+                "earliest": 1969.55,
+                "latest": 1969.55,
+                "status": "confirmed",
+            }
+        ]
+        record["display_date"] = {
+            "mode": "anchored",
+            "anchor_year": 1969.55,
+            "anchor_reason": text,
+        }
+    span = add_node(data, "node_span", 1969)
+    span["claim_ids"] = ["claim_origin"]
+    span["display_date"] = {
+        "mode": "estimated",
+        "anchor_year": 1969,
+        "kind": "activity",
+        "earliest": 1960,
+        "latest": 1979,
+        "anchor_reason": "十年単位",
+        "uncertainty": "個別の年は資料にない",
+        "basis_claim_ids": ["claim_origin"],
+    }
+    scene = layout(data)
+    labels = [line["text"] for line in scene["time_axis"]["labels"]]
+    assert "1926.21年" not in labels
+    assert "出来事 1926年3月16日" in labels
+    assert "1969.55年" in labels
+    assert "推定年代帯" in labels
+    assert "紀元前101年" in labels
+    assert "1950年" in labels
+    anchors = dict(scene["time_axis"]["anchors"])
+    assert anchors[1926.21] < anchors[1969] < anchors[1969.55]

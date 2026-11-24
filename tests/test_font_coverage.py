@@ -6,8 +6,8 @@ from xml.etree import ElementTree
 
 import pymupdf
 import pytest
-
 from test_engine import sample
+
 from truth_seeker.cli import main
 from truth_seeker.model import LayoutError, ValidationError, dump_records, validate
 from truth_seeker.render import emit, layout
@@ -47,23 +47,28 @@ def _multilingual_sample():
         source_url="https://example.org/scroll",
         locator="מגילת התרי־עשר",
     )
-    data["assets"].append({
-        "id": "asset_comparison",
-        "schema_version": "0.5",
-        "asset_type": "generated",
-        "node_id": "node_old",
-        "title": "写本比較 1QIsaᵃ",
-        "creator": "Popović",
-        "rights_note": "原資料をもとに作成",
-        "evidence_ids": ["evi_first"],
-        "figure": {
-            "kind": "table",
-            "columns": ["資料", "読み"],
-            "rows": [
-                {"cells": ["1QIsaᵃ", "関連する記述"], "evidence_ids": ["evi_first"]},
-            ],
-        },
-    })
+    data["assets"].append(
+        {
+            "id": "asset_comparison",
+            "schema_version": "0.5",
+            "asset_type": "generated",
+            "node_id": "node_old",
+            "title": "写本比較 1QIsaᵃ",
+            "creator": "Popović",
+            "rights_note": "原資料をもとに作成",
+            "evidence_ids": ["evi_first"],
+            "figure": {
+                "kind": "table",
+                "columns": ["資料", "読み"],
+                "rows": [
+                    {
+                        "cells": ["1QIsaᵃ", "関連する記述"],
+                        "evidence_ids": ["evi_first"],
+                    },
+                ],
+            },
+        }
+    )
     return data
 
 
@@ -131,11 +136,19 @@ def test_display_overrides_preserve_originals_and_match_all_formats(tmp_path, ca
     with pymupdf.open(tmp_path / "map.pdf") as doc:
         assert len(doc) == 1
         pdf = doc[0].get_text()
-        assert "https://example.org/scroll" in {link["uri"] for link in doc[0].get_links()}
+        assert "https://example.org/scroll" in {
+            link["uri"] for link in doc[0].get_links()
+        }
     root = ElementTree.parse(tmp_path / "map.svg").getroot()
     svg = "".join(root.itertext())
     html = (tmp_path / "map.html").read_text()
-    for label in ("大イザヤ書写本", "十二小預言書の巻物", "写本比較表", "Popovic", "1QIsa-a"):
+    for label in (
+        "大イザヤ書写本",
+        "十二小預言書の巻物",
+        "写本比較表",
+        "Popovic",
+        "1QIsa-a",
+    ):
         assert label in svg
         assert label in html
         assert label in pdf
@@ -143,12 +156,19 @@ def test_display_overrides_preserve_originals_and_match_all_formats(tmp_path, ca
     assert 'data-target="node_old">大イザヤ書写本</a>' in html
 
 
-@pytest.mark.parametrize(("kind", "display", "message"), [
-    ("nodes", [], "display must be an object"),
-    ("nodes", {"label": "  "}, "display.label must be nonblank text"),
-    ("evidence", {"source_url": "https://example.org/replacement"}, "unsupported display field"),
-    ("assets", {"figure.rows.9.cells.0": "無効"}, "unsupported display field"),
-])
+@pytest.mark.parametrize(
+    ("kind", "display", "message"),
+    [
+        ("nodes", [], "display must be an object"),
+        ("nodes", {"label": "  "}, "display.label must be nonblank text"),
+        (
+            "evidence",
+            {"source_url": "https://example.org/replacement"},
+            "unsupported display field",
+        ),
+        ("assets", {"figure.rows.9.cells.0": "無効"}, "unsupported display field"),
+    ],
+)
 def test_display_overrides_validate_allowed_fields(kind, display, message):
     data = _multilingual_sample()
     data[kind][0]["display"] = display
