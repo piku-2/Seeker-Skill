@@ -181,7 +181,7 @@ def _agreed_calendar_label(group):
     return None
 
 
-def _axis_labels(years, nodes):
+def _axis_labels(years, nodes, *, prefer_calendar=True):
     by_year = defaultdict(list)
     for node in nodes:
         by_year[node["anchor_year"]].append(node)
@@ -190,7 +190,11 @@ def _axis_labels(years, nodes):
         group = by_year[year]
         modes = {node.get("display_date", {}).get("mode", "anchored") for node in group}
         if year is None or "anchored" in modes:
-            agreed = None if year is None else _agreed_calendar_label(group)
+            agreed = (
+                _agreed_calendar_label(group)
+                if year is not None and prefer_calendar
+                else None
+            )
             labels.append(agreed or date_text(year))
         elif "estimated" in modes:
             labels.append("推定年代帯")
@@ -439,16 +443,31 @@ def _asset_image(record, run_dir):
             raise ValueError(f"{record['id']}: image checksum differs")
     else:
         raw = _saved_figure(root, record)
-    with Image.open(io.BytesIO(raw)) as image:
-        image.load()
-        if image.format not in {"JPEG", "PNG"}:
+    return _decode_raster(raw)
+
+
+def _decode_raster(raw):
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            image.load()
+            if image.format in {"JPEG", "PNG"}:
+                return raw, Image.MIME[image.format], image.size
             buffer = io.BytesIO()
             image.convert("RGBA").save(buffer, format="PNG")
-            raw = buffer.getvalue()
-            mime = "image/png"
-        else:
-            mime = Image.MIME[image.format]
-        return raw, mime, image.size
+            return buffer.getvalue(), "image/png", image.size
+    except Image.DecompressionBombError as exc:
+        raise ValueError("image exceeds the supported decoding size") from exc
+
+
+def inspect_image(path):
+    """Verify the downloaded bytes and report their input checksum."""
+    raw = Path(path).read_bytes()
+    _, render_mime, size = _decode_raster(raw)
+    return {
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "size": list(size),
+        "render_mime": render_mime,
+    }
 
 
 def _prepare_assets(nodes, data, run_dir, evidence):
@@ -905,6 +924,7 @@ def layout(
         "units": "pt",
         "time_axis": {
             "monotonic": True,
+            "calendar_labels": True,
             "anchors": anchors,
             "unknown_y": y,
             "labels": markers,
@@ -1289,11 +1309,17 @@ def check_scene(scene, data=None):
         "chronology",
         "chronology reversed",
     )
+    actual_labels = [line["text"] for line in axis["labels"]]
+    expected_labels = _axis_labels(anchors, nodes.values())
+    labels_match = actual_labels == expected_labels or (
+        "calendar_labels" not in axis
+        and actual_labels
+        == _axis_labels(anchors, nodes.values(), prefer_calendar=False)
+    )
     _require(
         set(anchors)
         == {n["anchor_year"] for n in nodes.values() if n["anchor_year"] is not None}
-        and [line["text"] for line in axis["labels"]]
-        == _axis_labels(anchors, nodes.values()),
+        and labels_match,
         "chronology",
         "axis labels and node dates do not match",
     )

@@ -233,10 +233,12 @@ def _ensure_illustration_task(progress):
 
 def save_illustrations(base, report, complete=False):
     from .figure_plan import validate_plan
+    from .photos import validate_photo_search
 
     def validate_report(report, data):
         validate_search(report, data)
         validate_plan(report.get("figure_plan"), data)
+        validate_photo_search(report, data)
 
     return _save_research_report(
         base, report, complete, TASK_KIND, TASK_TOPIC, "illustration", validate_report
@@ -301,13 +303,14 @@ def resume(base):
                 task["last_error"] = (
                     f"Active generation changed; recheck the {prefix} report"
                 )
-        if illustrations["status"] == "completed" and not isinstance(
-            illustrations.get("illustration_report", {}).get("figure_plan"), dict
+        if illustrations["status"] == "completed" and any(
+            not isinstance(
+                illustrations.get("illustration_report", {}).get(field), dict
+            )
+            for field in ("figure_plan", "photo_plan")
         ):
             _set_task_status(pr, illustrations, "retryable")
-            illustrations["last_error"] = (
-                "Review figure opportunities in the saved illustration report"
-            )
+            illustrations["last_error"] = "Review missing figure or photo plans"
         pr["run_status"] = "paused"
         atomic_json(base / "progress.json", pr)
         if (base / "manifest.json").exists():

@@ -82,6 +82,16 @@ def build_parser():
         "figure-candidates", help="List graph structures to review for figures"
     )
     a.add_argument("generation", type=Path, help="Staged or saved generation directory")
+    a = s.add_parser(
+        "photo-candidates",
+        help="List important and representative subjects for documentary images",
+    )
+    a.add_argument("run")
+    a = s.add_parser(
+        "image-inspect",
+        help="Decode a downloaded image and report its size and checksum",
+    )
+    a.add_argument("path", type=Path)
     a = s.add_parser("font-check", help="Find unsupported characters before rendering")
     a.add_argument("generation", type=Path, help="Staged or saved generation directory")
     a.add_argument(
@@ -151,6 +161,25 @@ def main(argv=None):
             data = load_generation(args.generation)
             validate(data)
             output({"candidates": opportunities(data)})
+        elif args.command == "photo-candidates":
+            from .photos import opportunities
+            from .representatives import KIND
+            from .store import research_task
+
+            progress = read_progress(args.run)
+            generation = progress["active_generation"]
+            data = load_generation(Path(args.run) / "snapshots" / generation)
+            task = research_task(progress, KIND) or {}
+            output(
+                {
+                    "generation": generation,
+                    "targets": opportunities(data, task.get("representative_report")),
+                }
+            )
+        elif args.command == "image-inspect":
+            from .scene import inspect_image
+
+            output(inspect_image(args.path))
         elif args.command == "font-check":
             if not (args.generation / "nodes.jsonl").is_file():
                 raise ValidationError(
@@ -224,6 +253,7 @@ def main(argv=None):
                     "representatives": qa["representatives"],
                     "chronology": qa["chronology"],
                     "figures": qa["figures"],
+                    "photos": qa["photos"],
                     "note": "Review flags must be supported by actual agent evidence, not invented",
                 }
                 qa_dir = Path(args.run) / "qa"

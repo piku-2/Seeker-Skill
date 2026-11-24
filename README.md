@@ -76,6 +76,10 @@ uv run pytest -v -rs
 
 3形式は同梱のNoto Sans JP Regularを使い、共通シーンに記録した改行と座標で描画する。旧レイアウトの成果物に対して品質判定を行う場合は、先に現在の `render` で再生成する。フォントに収録されていない文字がある場合、描画前のQAが文字を報告する。同梱のフォントは Google Fonts の可変フォントからウェイト400を生成したもの。[配布元](https://github.com/google/fonts/tree/main/ofl/notosansjp)・[ライセンス](truth_seeker/fonts/OFL-NotoSansJP.txt)
 
+### 写真・実物史料の探索と確認
+
+`photo-candidates <run>` で重要ノードと採用済みの代表対象を確認する。実画像の探索・取得・権利・採否を `illustrations-save` の `photo_plan` で記録し、`image-inspect <path>` で取得内容を点検できる。完了時は、実写真・実物史料の代表対象カバレッジと各出力への掲載を、生成図表とは別に確認する。[写真のデータ契約](references/data-contract.md#documentary-image-coverage)
+
 ### 動的配置・図表・代表例
 
 年代帯の中でカードと複数ノードの図表の寸法を使って配置を調整する。研究上の推定範囲と、明示的な先後関係による配置目安を区別し、根拠が足りない場合は年代不明の理由を記録する。

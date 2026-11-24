@@ -7,6 +7,11 @@ KIND = "representative_search"
 TOPIC = "代表的対象の探索・採否"
 
 
+def subject_nodes(candidate):
+    """Identify the representative subject separately from related graph nodes."""
+    return candidate.get("subject_node_ids", candidate.get("node_ids", [])[:1])
+
+
 def validate_representatives(report, data):
     ensure(
         isinstance(report, dict) and _text(report.get("scope")),
@@ -50,5 +55,13 @@ def validate_representatives(report, data):
             and set(node_ids) <= adopted
             and bool(node_ids) == (decision == "adopted"),
             f"representatives: {key} must link an adopted candidate to its adopted nodes",
+        )
+        subjects = subject_nodes(item)
+        ensure(
+            _ids(subjects)
+            and set(subjects) <= set(node_ids)
+            and len(set(subjects)) == len(subjects)
+            and bool(subjects) == (decision == "adopted"),
+            f"representatives: {key} has invalid subject_node_ids",
         )
     return len(candidates)

@@ -1,6 +1,7 @@
 """Run completion gate for graph, artifact and agent review."""
 
 import base64
+import hashlib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -8,6 +9,12 @@ from .chronology import is_text
 from .figure_plan import validate_plan, validate_review
 from .illustrations import validate_search, validate_visual_review
 from .model import ValidationError, ensure, validate
+from .photos import (
+    DOCUMENTARY_TYPES,
+    metrics,
+    validate_photo_review,
+    validate_photo_search,
+)
 from .render import check_saved_artifacts
 from .representatives import KIND, validate_representatives
 from .scene import _asset_image, check_scene
@@ -164,6 +171,63 @@ def _figure_qa(data, review, progress, illustration):
     return {"status": "pass", "candidate_count": count}
 
 
+def _photo_qa(data, scene, review, progress, illustrations, representatives):
+    nonvector = [a for a in scene.get("assets", []) if "bbox" in a]
+    drawn = [a for a in nonvector if a["record"].get("asset_type") in DOCUMENTARY_TYPES]
+    result = {
+        "status": "fail",
+        "scene_documentary_images": len(drawn),
+        "generated_figure_count": illustrations["generated_figure_count"],
+    }
+    try:
+        ensure(
+            illustrations["status"] == "pass",
+            "photos: verify saved illustration outputs first",
+        )
+        result.update(
+            {
+                "photo_count": sum(
+                    a["record"].get("asset_type") == "photo" for a in drawn
+                ),
+                "scan_count": sum(
+                    a["record"].get("asset_type") == "primary_document" for a in drawn
+                ),
+                "other_documentary_count": sum(
+                    a["record"].get("asset_type") == "visual_source" for a in drawn
+                ),
+                "external_raster_count": len(nonvector) - len(drawn),
+                "verified_documentary_images": len(drawn),
+                "formats": dict.fromkeys(illustrations["formats"], len(drawn)),
+            }
+        )
+        ensure(
+            representatives["status"] == "pass",
+            "photos: verify representative subjects first",
+        )
+        report = illustration_task(progress)["illustration_report"]
+        reps = research_task(progress, KIND)["representative_report"]
+        coverage = validate_photo_search(report, data, reps)
+        drawn_ids = {a["id"] for a in drawn}
+        result.update(metrics(coverage, drawn_ids))
+        ensure(
+            drawn_ids == coverage["assets"].keys(),
+            "photos: registered images absent from output",
+        )
+        fingerprints = {
+            hashlib.sha256(a["image_data"].encode()).digest() for a in drawn
+        }
+        ensure(
+            len(fingerprints) == len(drawn),
+            "photos: identical image payloads are registered twice",
+        )
+        validate_photo_review(review.get("photo_review"), coverage)
+    except ValidationError as exc:
+        result["reason"] = str(exc)
+    else:
+        result["status"] = "pass"
+    return result
+
+
 def judge(data, scene, review, *, progress=None, run_dir=None):
     v = validate(data)
     g = check_scene(scene, data)
@@ -171,11 +235,12 @@ def judge(data, scene, review, *, progress=None, run_dir=None):
     representatives = _representative_qa(data, review, progress)
     chronology = _chronology_qa(data, review)
     figures = _figure_qa(data, review, progress, illustrations)
+    photos = _photo_qa(data, scene, review, progress, illustrations, representatives)
     st = classify(
         review.get("research_complete") is True,
         all(
             check["status"] == "pass"
-            for check in (illustrations, representatives, chronology, figures)
+            for check in (illustrations, representatives, chronology, figures, photos)
         ),
         review.get("semantic_pass") is True,
         review.get("artifact_pass") is True,
@@ -189,5 +254,6 @@ def judge(data, scene, review, *, progress=None, run_dir=None):
         "representatives": representatives,
         "chronology": chronology,
         "figures": figures,
+        "photos": photos,
         "review": review,
     }

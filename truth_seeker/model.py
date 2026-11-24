@@ -333,6 +333,7 @@ def validate(records_by_type, *, include_placements=False):
         if kind in (
             "photo",
             "primary_document",
+            "visual_source",
             "diagram",
             "map",
             "chart",

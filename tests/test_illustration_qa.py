@@ -1,5 +1,6 @@
 """Illustration workflow tests. All invented source and object records are fixtures."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -32,10 +33,22 @@ def search_fixture():
         "searches": [
             {
                 "id": "s1",
+                "purpose": "photo",
+                "execution": "executed",
+                "strategy": "institution",
                 "query": "架空の資料",
                 "checked_urls": [SOURCE, RIGHTS],
                 "result": "架空の所蔵資料を1件確認",
-            }
+            },
+            {
+                "id": "s2",
+                "purpose": "photo",
+                "execution": "executed",
+                "strategy": "catalog_id",
+                "query": "架空の別名と資料番号",
+                "checked_urls": [SOURCE],
+                "result": "別資料がないことを確認",
+            },
         ],
         "targets": [
             {
@@ -54,9 +67,29 @@ def search_fixture():
                 "decision": "rejected",
                 "rights": "unknown",
                 "reason": "公開アーカイブの再配布条件が明記されていない",
+                "media_kind": "photo",
+                "depicted_node_ids": ["node_old"],
+                "provider": "架空のアーカイブ",
+                "identifier": "fixture-1",
+                "acquisition": "not_attempted",
+                "useful": True,
+                "rejection": "rights_unavailable",
             }
         ],
         "zero_reason": "架空アーカイブで確認した画像の再配布条件が明記されていない",
+        "photo_plan": {
+            "scope": "架空の資料と別名を探索",
+            "targets": [
+                {
+                    "node_id": "node_old",
+                    "decision": "search",
+                    "reason": "起点の資料",
+                    "value": "色と形を見せる",
+                    "search_ids": ["s1", "s2"],
+                    "outcome": "同定と利用条件を照合",
+                }
+            ],
+        },
         "figure_plan": {
             "checks": {key: "架空のテストデータに検証済みの根拠なし" for key in CHECKS},
             "decisions": [
@@ -87,6 +120,20 @@ def review_fixture(generation, assets=(), independent="pass"):
             "node_notes": {
                 "node_unknown": "この架空の概念は前後を判断できる資料がない。"
             },
+        },
+        "photo_review": {
+            "coverage_adequate": True,
+            "findings": "架空カタログを対象に追加の照会を確認。",
+            "checks": [
+                {
+                    "node_id": "node_old",
+                    "query": "架空の提供元と所蔵分野",
+                    "checked_urls": [SOURCE],
+                    "finding": "類似資料と出典を照合。",
+                    "unresolved_useful_candidate": False,
+                }
+            ],
+            "excluded": {},
         },
         "figure_review": {
             "coverage_adequate": True,
@@ -242,6 +289,8 @@ def test_adopted_image_and_artifact_drift(tmp_path):
             "local_path": "staging/photo.png",
             "caption": "架空の写真",
             "source_url": SOURCE,
+            "source_page_url": SOURCE,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "license": "CC0",
         }
     ]
@@ -252,6 +301,7 @@ def test_adopted_image_and_artifact_drift(tmp_path):
         rights="cleared",
         rights_note="CC0",
         rights_url=RIGHTS,
+        acquisition="verified",
         asset_id=asset_id,
     )
     save_illustrations(run, report, complete=True)
