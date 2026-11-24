@@ -183,7 +183,7 @@ def test_multiple_edges_use_distinct_ports_including_parallel_and_self_edges():
         check_scene(scene, data)
 
 
-def test_dense_band_grows_lanes_and_does_not_invent_unknown_anchors():
+def test_dense_band_grows_width_and_does_not_invent_unknown_anchors():
     data = sample()
     for i in range(28):
         add_node(
@@ -203,7 +203,8 @@ def test_dense_band_grows_lanes_and_does_not_invent_unknown_anchors():
     assert all(n["bbox"][1] + n["bbox"][3] < future[1] for n in same_band)
     assert node(scene, "node_unknown")["anchor_year"] is None
     assert node(scene, "node_unknown")["anchor"][1] > future[1]
-    assert scene["lane_definitions"][3]["width"] > scene["lane_definitions"][1]["width"]
+    assert "lane_definitions" not in scene
+    assert len({n["bbox"][0] for n in same_band}) > 4
     assert check_scene(scene, data)["status"] == "pass"
 
 

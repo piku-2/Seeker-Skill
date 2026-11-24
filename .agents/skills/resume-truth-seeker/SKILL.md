@@ -64,6 +64,7 @@ python -m truth_seeker resume <run_dir>
 - `frontier_task_ids`
 - `last_successful_phase`
 - `kind: illustration_search` のタスク。途中記録は `illustration_report` に残る。旧runで未登録なら再開時に追加される。完了記録が現行generationから外れた場合は再点検する。
+- `kind: representative_search` のタスクと `representative_report`。保存済みの人物・場所・遺物などの候補を引き継ぎ、未決の採否を調査する。
 
 ## 3. 未完了タスクだけを続行する
 
@@ -75,6 +76,7 @@ python -m truth_seeker resume <run_dir>
 - 新しい意味のある調査分岐が見つかった場合のみ `task-add` で既存runへ追加する。これは新runではなく既存runのタスク追加である。
 - 途中タスクの証拠・参照・mergeに問題がない場合のみ `task-update ... completed` にする。
 - 図版探索は保存済みの検索結果や候補を引き継ぎ、未確認の出典・利用条件・採否を優先する。`illustrations-save` で途中経過を保存し、図版登録を含むmergeの後に `--complete` を付けて現行generationに対して確定する。詳細は [データ契約](references/data-contract.md) を参照。
+- 代表的対象の探索は `representatives-save` で保存し、採用ノードを含むmergeの後に `--complete` で確定する。確認済みの出典を元に図表を作成する場合は、その根拠を記録する。
 
 レートリミットが解消していない場合は、進行中タスクを再試行可能状態に保ち、`progress.json`・manifest・既存のチェックポイントを更新したうえで中断する。
 
@@ -101,7 +103,7 @@ mergeは既存runの新しいgenerationとして保存する。
 3. 全採用ノードと採用エッジ、時系列、未知日、異説表示、`ID` の安定性を確認する。
 4. メインエージェントによる資料・意味・視覚レビューを実施する。
 5. 利用可能なら独立レビュアーによる高リスクな因果・異説レビューを実施する。
-6. レビューには現行 `generation` と `illustration_review` を含め、探索範囲の妥当性、掲載図版の説明力と出典・権利を確認する。0件の場合も実施済みの探索と不採用理由を点検する。
+6. レビューには現行 `generation`、`representative_review`、`illustration_review` を含め、候補の網羅性、採否理由、図版と図表の説明力および出典・権利を確認する。図版が0件の場合も探索と不採用理由を点検する。
 7. レビューJSONを既存runの `qa/` または同等の明示的な位置へ保存し、実行する:
 
 ```bash

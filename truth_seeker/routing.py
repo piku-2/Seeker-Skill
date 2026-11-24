@@ -305,10 +305,53 @@ def _detour(a, b, walk, search_boxes, margin_boxes):
     return None, original
 
 
-def route_edges(edges, positions, obstacles, columns):
+def _shelf_detours(
+    start, goal, source_rows, target_rows, columns, boxes, clear, traffic
+):
+    # Find temporary aisles through the intervening shelves. Their positions
+    # depend on the endpoints and obstacles and never constrain node placement.
+    candidates = []
+    for ya in source_rows:
+        a = start[0], ya
+        if not clear(start, a, 1):
+            continue
+        for yb in target_rows:
+            b = goal[0], yb
+            if not clear(b, goal, 1):
+                continue
+            low, high = sorted((ya, yb))
+            gaps = []
+            left = columns[0]
+            for x0, y0, x1, y1 in boxes:
+                if y0 > high or y1 < low:
+                    continue
+                if x0 - left >= 2:
+                    gaps.append((left, x0 - 1))
+                left = max(left, x1 + 1)
+            if left <= columns[-1]:
+                gaps.append((left, columns[-1]))
+            ideal = (a[0] + b[0]) / 2
+            probe = {min(hi, max(lo, ideal)) for lo, hi in gaps}
+            for x in sorted(probe | {a[0], b[0], *columns}):
+                c, d = (x, ya), (x, yb)
+                walk = [start, a, c, d, b, goal]
+                axes = (1, 0, 1, 0, 1)
+                legs = list(zip(pairwise(walk), axes))
+                if all(clear(p, q, axis) for (p, q), axis in legs):
+                    length = sum(abs(p[axis] - q[axis]) for (p, q), axis in legs)
+                    load = sum(
+                        _traffic_cost(p, q, axis, traffic) - abs(p[axis] - q[axis])
+                        for (p, q), axis in legs
+                    )
+                    candidates.append((length + min(28, load), walk))
+    return [walk for _, walk in sorted(candidates)]
+
+
+def route_edges(edges, positions, obstacles, columns, *, shelves=None):
     ports = _ports(edges, positions)
     search_boxes = {key: padded(box, CLEARANCE + 3) for key, box in obstacles.items()}
     clear = _obstacle_index(tuple(search_boxes.values()))
+    sorted_boxes = sorted(search_boxes.values()) if shelves is not None else []
     rows = sorted(
         {
             yy + offset
@@ -330,8 +373,23 @@ def route_edges(edges, positions, obstacles, columns):
 
         lead_a = _extend(a, start["side"], LEAD)
         lead_b = _extend(b, end["side"], LEAD)
-        for search in (_gutter_route, _corridor_route):
-            walk = search(lead_a, lead_b, columns, rows, clear, traffic)
+        if shelves is not None:
+            walks = _shelf_detours(
+                lead_a,
+                lead_b,
+                shelves[edge["source_id"]],
+                shelves[edge["target_id"]],
+                columns,
+                sorted_boxes,
+                clear,
+                traffic,
+            )
+        else:
+            walks = (
+                search(lead_a, lead_b, columns, rows, clear, traffic)
+                for search in (_gutter_route, _corridor_route)
+            )
+        for walk in walks:
             if walk is None:
                 continue
             path, corridors = _detour(a, b, walk, search_boxes.items(), margin_boxes)

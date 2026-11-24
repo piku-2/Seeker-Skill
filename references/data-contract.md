@@ -52,3 +52,24 @@ For final QA, include the active `generation` in the ordinary review JSON and ad
 ```
 
 For zero images use `assets: []` and explain why the documented search was adequate. Awaiting source access or an unresolved relevant candidate is unfinished research. The QA gate checks the recorded search, associations, active generation, image payloads, and saved SVG/HTML/PDF artifacts as applicable. The reviewer judges historical accuracy, relevance, visual usefulness and reuse terms. Python checks that these judgments were recorded. A completed search may have zero images, and existing image-free generations can still be read and rendered. Completion under current QA requires the search and review records. A new generation requires rechecking the report and rerendering before QA. The CLI stores the latest result in `qa/illustration-result.json`.
+
+## Generated vector figures
+
+An `assets.jsonl` record can use `asset_type: "generated"` with a `figure` object, caption, original credit in `rights_note`, and accessible `evidence_ids`. Link it to adopted nodes using `node_id` or `related_node_ids`. Use `placement: "gallery"` for a separate comparison panel that keeps its node associations, or leave placement unset for an inline panel. Photo and scan records still use the raster path. Multiple panels may share a node, and full graph coverage takes priority over output dimensions.
+
+| `figure.kind` | Content |
+| --- | --- |
+| `table` | `columns` and `rows` containing one `cells` array per row |
+| `relations` | `edge_ids` referring to adopted graph edges whose endpoints are panel owners. Each edge must share a cited source with the panel. |
+| `bar` | `unit` and `rows` with a `label` and finite numeric `value` |
+| `distribution` | `rows` with `label`, `latitude` and `longitude`. Displays a coordinate plot without an inferred basemap. |
+
+Every table, numeric or coordinate row must reference a nonempty subset of the panel's `evidence_ids`. Supply only confirmed values. The engine tests the formal references and geometry; the reviewer checks whether each source actually supports the content. Figures render as common text and vector rectangles in PDF, SVG and HTML. In the illustration search record, use `rights: "original"` and a `rights_note` for generated panels, citing a checked evidence URL. External images continue to require cleared reuse terms and a rights URL. Include generated panels in the same visual review as photos.
+
+## Representative-subject review
+
+`init` and `resume` plan a separate `representative_search` task. Search for subjects that concretely explain the theme, such as people, places, artifacts, buildings, cultural practices and events. Consider thematic relevance and explanatory value along with recognition. Use evidence-backed graph links that express the actual relationship.
+
+Record a `scope` and `searches` with unique `id`, actual `query` and `result`. Each entry in `candidates` needs a unique `id`, `label`, `kind`, `search_ids`, consulted `source_urls`, and a `decision` and `reason`. A final decision is `adopted` or `rejected`. Use `node_ids` to link each adopted candidate to the active graph. Leave it empty for a rejection. Save progress with `representatives-save <run> <report.json>`, then finalize with `--complete` after merging. Include a `representative_review` object with `coverage_adequate` and concrete `findings` in the current generation's QA. The reviewer determines whether the search covers the theme. The engine checks that decisions are resolved and adopted subjects have valid graph links.
+
+Layout revision 4 uses measured card dimensions inside chronological bands. The placement search tries geometrically increasing shelf widths up to the widest unbroken band, minimizing estimated vertical extent and penalizing unnecessary width. It stops expanding when the candidate range is exhausted and only accepts improvements above one point in the score. Bounded sweeps can tighten horizontal graph connections without moving a card to another date. The renderer still accepts revisions 2 and 3.

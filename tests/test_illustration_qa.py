@@ -8,7 +8,7 @@ from PIL import Image
 from test_engine import sample
 
 from truth_seeker.cli import main
-from truth_seeker.model import ValidationError, load_generation
+from truth_seeker.model import ValidationError, load_generation, validate
 from truth_seeker.qa import judge
 from truth_seeker.render import emit, layout
 from truth_seeker.store import (
@@ -18,6 +18,7 @@ from truth_seeker.store import (
     read_progress,
     resume,
     save_illustrations,
+    save_representatives,
 )
 
 SOURCE = "https://example.org/fixture/object"
@@ -61,6 +62,10 @@ def search_fixture():
 def review_fixture(generation, assets=(), independent="pass"):
     return {
         "generation": generation,
+        "representative_review": {
+            "coverage_adequate": True,
+            "findings": "架空の対象を確認",
+        },
         "research_complete": True,
         "semantic_pass": True,
         "artifact_pass": True,
@@ -79,6 +84,27 @@ def review_fixture(generation, assets=(), independent="pass"):
                 for key in assets
             ],
         },
+    }
+
+
+def representative_fixture():
+    return {
+        "scope": "架空の代表例を調査",
+        "searches": [
+            {"id": "s1", "query": "架空の対象", "result": "架空の代表例を1件確認"}
+        ],
+        "candidates": [
+            {
+                "id": "rep1",
+                "label": "架空の人物",
+                "kind": "人物",
+                "search_ids": ["s1"],
+                "source_urls": [SOURCE],
+                "decision": "adopted",
+                "reason": "主題に直接関連する",
+                "node_ids": ["node_old"],
+            }
+        ],
     }
 
 
@@ -128,6 +154,7 @@ def test_documented_zero_images_retains_review_statuses(tmp_path, independent, s
     gen = commit_generation(run, data)
     search = search_fixture()
     save_illustrations(run, search, complete=True)
+    save_representatives(run, representative_fixture(), complete=True)
     scene = render_fixture(run, data, force_pdf_error=True)
     outcome = assess(run, data, scene, review_fixture(gen, independent=independent))
     assert outcome["status"] == status
@@ -197,6 +224,7 @@ def test_adopted_image_and_artifact_drift(tmp_path):
         asset_id=asset_id,
     )
     save_illustrations(run, report, complete=True)
+    save_representatives(run, representative_fixture(), complete=True)
     scene = render_fixture(run, data)
     full = review_fixture(gen, [asset_id])
     result = assess(run, data, scene, full)
@@ -242,13 +270,24 @@ def test_saved_pharaoh_generation_can_render_and_remains_unverified_for_figures(
     if not runs:
         pytest.skip("local Pharaoh research run unavailable")
     original = runs[-1]
-    data = load_generation(original / "snapshots/g000007")
-    assert not data["assets"]
+    generation = json.loads((original / "progress.json").read_text())[
+        "active_generation"
+    ]
+    data = load_generation(original / "snapshots" / generation)
+    counts = validate(data)
     run = create_run(tmp_path, "ファラオ")
+    for asset in data["assets"]:
+        if local := asset.get("local_path"):
+            target = run / local
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((original / local).read_bytes())
     gen = commit_generation(run, data)
     scene = render_fixture(run, data)
     outcome = assess(run, data, scene, review_fixture(gen))
-    assert outcome["scene"]["node_count"] == 30
-    assert outcome["scene"]["edge_count"] == 36
-    assert outcome["illustrations"]["image_count"] == 0
+    assert outcome["scene"]["node_count"] == len(counts["adopted_node_ids"])
+    assert outcome["scene"]["edge_count"] == len(counts["adopted_edge_ids"])
+    assert outcome["illustrations"]["image_count"] == sum(
+        "bbox" in asset or "figure_bbox" in asset for asset in scene["assets"]
+    )
+    assert outcome["illustrations"]["task_status"] == "missing"
     assert outcome["status"] == "incomplete"

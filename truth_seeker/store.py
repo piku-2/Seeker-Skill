@@ -12,6 +12,9 @@ from uuid import uuid4
 
 from .illustrations import TASK_KIND, TASK_TOPIC, validate_search
 from .model import FILES, ValidationError, dump_records, load_generation, validate
+from .representatives import KIND as REPRESENTATIVES
+from .representatives import TOPIC as REPRESENTATIVE_TOPIC
+from .representatives import validate_representatives
 
 JST = timezone(timedelta(hours=9))
 
@@ -112,6 +115,7 @@ def create_run(root, query, run_id=None, folder_name=None, *, plan_illustrations
     }
     if plan_illustrations:
         _ensure_illustration_task(initial)
+        _ensure_task(initial, REPRESENTATIVES, REPRESENTATIVE_TOPIC)
     commit_generation(base, {k: [] for k in FILES}, progress=initial)
     atomic_json(
         base / "manifest.json",
@@ -186,10 +190,12 @@ def latest_good(base):
     raise ValidationError("no valid snapshot")
 
 
+def research_task(progress, kind):
+    return next((task for task in progress["tasks"] if task.get("kind") == kind), None)
+
+
 def illustration_task(progress):
-    return next(
-        (task for task in progress["tasks"] if task.get("kind") == TASK_KIND), None
-    )
+    return research_task(progress, TASK_KIND)
 
 
 def _new_task(progress, topic, priority=0, parent_task_id=None):
@@ -213,30 +219,50 @@ def _new_task(progress, topic, priority=0, parent_task_id=None):
     return task
 
 
-def _ensure_illustration_task(progress):
-    task = illustration_task(progress)
+def _ensure_task(progress, kind, topic):
+    task = research_task(progress, kind)
     if task is None:
-        task = _new_task(progress, TASK_TOPIC)
-        task["kind"] = TASK_KIND
+        task = _new_task(progress, topic)
+        task["kind"] = kind
     return task
 
 
+def _ensure_illustration_task(progress):
+    return _ensure_task(progress, TASK_KIND, TASK_TOPIC)
+
+
 def save_illustrations(base, report, complete=False):
-    """Checkpoint a draft or finalize it against the active graph."""
+    return _save_research_report(
+        base, report, complete, TASK_KIND, TASK_TOPIC, "illustration", validate_search
+    )
+
+
+def save_representatives(base, report, complete=False):
+    return _save_research_report(
+        base,
+        report,
+        complete,
+        REPRESENTATIVES,
+        REPRESENTATIVE_TOPIC,
+        "representative",
+        validate_representatives,
+    )
+
+
+def _save_research_report(base, report, complete, kind, topic, prefix, validate_report):
     if not isinstance(report, dict):
-        raise ValidationError("illustrations: expected a JSON object")
+        raise ValidationError(f"{prefix}: expected a JSON object")
     base = Path(base)
     with progress_lock(base):
         progress = read_progress(base)
-        task = _ensure_illustration_task(progress)
+        task = _ensure_task(progress, kind, topic)
         generation = progress["active_generation"]
         if complete:
             verify_generation(base, generation)
-            validate_search(report, load_generation(base / "snapshots" / generation))
-        task["illustration_report"] = report
-        task["illustration_generation"] = generation if complete else None
-        status = "completed" if complete else "running"
-        _set_task_status(progress, task, status)
+            validate_report(report, load_generation(base / "snapshots" / generation))
+        task[f"{prefix}_report"] = report
+        task[f"{prefix}_generation"] = generation if complete else None
+        _set_task_status(progress, task, "completed" if complete else "running")
         atomic_json(base / "progress.json", progress)
         if (base / "manifest.json").exists():
             update_manifest(base)
@@ -252,18 +278,23 @@ def resume(base):
         except (ValidationError, FileNotFoundError, ValueError, KeyError):
             pr["active_generation"] = latest_good(base)
         illustrations = _ensure_illustration_task(pr)
+        representatives = _ensure_task(pr, REPRESENTATIVES, REPRESENTATIVE_TOPIC)
         for t in pr.get("tasks", []):
             if t.get("status") == "running":
                 _set_task_status(pr, t, "retryable")
                 t["last_error"] = "Interrupted; reclaimed on resume"
-        if (
-            illustrations["status"] == "completed"
-            and illustrations.get("illustration_generation") != pr["active_generation"]
+        for task, prefix in (
+            (illustrations, "illustration"),
+            (representatives, "representative"),
         ):
-            _set_task_status(pr, illustrations, "retryable")
-            illustrations["last_error"] = (
-                "Active generation changed; recheck the illustration report"
-            )
+            if (
+                task["status"] == "completed"
+                and task.get(f"{prefix}_generation") != pr["active_generation"]
+            ):
+                _set_task_status(pr, task, "retryable")
+                task["last_error"] = (
+                    f"Active generation changed; recheck the {prefix} report"
+                )
         pr["run_status"] = "paused"
         atomic_json(base / "progress.json", pr)
         if (base / "manifest.json").exists():
@@ -295,9 +326,9 @@ def update_task(base, task_id, status, **extra):
             raise ValueError("unknown task")
         t = matched[0]
         t.update(extra)
-        if t.get("kind") == TASK_KIND and status == "completed":
+        if t.get("kind") in (TASK_KIND, REPRESENTATIVES) and status == "completed":
             raise ValidationError(
-                "finalize illustration searches with illustrations-save --complete"
+                "finalize these searches with illustrations-save or representatives-save --complete"
             )
         _set_task_status(pr, t, status)
         atomic_json(base / "progress.json", pr)

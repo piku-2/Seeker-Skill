@@ -140,6 +140,11 @@ def render_svg(scene):
                 f'<image x="{x}" y="{y}" width="{w}" height="{h}" '
                 f'href="data:{asset["mime"]};base64,{asset["image_data"]}"/>'
             )
+        for shape in asset.get("shapes", []):
+            x, y, w, h = shape["bbox"]
+            parts.append(
+                f'<rect data-figure-shape="1" x="{x}" y="{y}" width="{w}" height="{h}" fill="{shape["fill"]}"/>'
+            )
         for line in asset["text_lines"]:
             text = svg_text(line)
             if line.get("source_url", "").startswith(("https://", "http://")):
@@ -277,6 +282,10 @@ def render_pdf(scene, path):
             x, y, iw, ih = asset["bbox"]
             image = ImageReader(io.BytesIO(base64.b64decode(asset["image_data"])))
             c.drawImage(image, x, h - y - ih, iw, ih, mask="auto")
+        for shape in asset.get("shapes", []):
+            x, y, sw, sh = shape["bbox"]
+            c.setFillColor(HexColor(shape["fill"]))
+            c.rect(x, h - y - sh, sw, sh, fill=1, stroke=0)
     for line in all_text_lines(scene):
         label(line)
     for url, (x, y, ww, hh) in _link_areas(scene):
@@ -341,6 +350,15 @@ def _check_svg(scene, svg, html_document):
                 float(image.get(v, "nan")) for v in ("x", "y", "width", "height")
             ] != asset["bbox"]:
                 raise ValueError("SVG image bounds differ from scene")
+        shapes = group.findall(f"{SVG_NS}rect[@data-figure-shape]")
+        expected_shapes = asset.get("shapes", [])
+        if len(shapes) != len(expected_shapes) or any(
+            s.get("fill") != e["fill"]
+            or [float(s.get(field, "nan")) for field in ("x", "y", "width", "height")]
+            != e["bbox"]
+            for s, e in zip(shapes, expected_shapes)
+        ):
+            raise ValueError("SVG vector figure differs from scene")
         expected_links = [
             line["source_url"]
             for line in asset["text_lines"]
@@ -397,6 +415,24 @@ def _check_pdf(scene, output):
             not close_rect(im["bbox"], box) for im, box in zip(images, boxes)
         ):
             raise ValueError("PDF image bounds differ from scene")
+        shapes = [
+            shape for a in scene.get("assets", []) for shape in a.get("shapes", [])
+        ]
+        if shapes:
+            rectangles = defaultdict(list)
+            for drawing in page.get_drawings():
+                if drawing["fill"] is not None:
+                    color = tuple(round(value * 255) for value in drawing["fill"])
+                    rectangles[color].extend(
+                        item[1] for item in drawing["items"] if item[0] == "re"
+                    )
+            for shape in shapes:
+                color = tuple(bytes.fromhex(shape["fill"][1:]))
+                if not any(
+                    close_rect(actual, page_rect(shape["bbox"]))
+                    for actual in rectangles[color]
+                ):
+                    raise ValueError("PDF vector figure geometry differs from scene")
         # Extract glyph origins instead of clipping against renderer-specific ascenders.
         baselines = defaultdict(list)
         for block in page.get_text(
@@ -448,7 +484,9 @@ def check_saved_artifacts(scene, out_dir):
     if pdf.is_file() or primary == "pdf":
         _check_pdf(scene, pdf)
         formats.append("pdf")
-    count = sum("bbox" in asset for asset in scene.get("assets", []))
+    count = sum(
+        "bbox" in asset or "figure_bbox" in asset for asset in scene.get("assets", [])
+    )
     return {name: count for name in formats}
 
 
@@ -495,6 +533,19 @@ def emit(scene, out_dir, force_pdf_error=False):
         "scene_check": scene_check,
         "svg_path": str(svg_path),
         "html_path": str(html_path),
+        "canvas_width": scene["canvas_width"],
+        "canvas_height": scene["canvas_height"],
+        "coverage": {
+            "nodes": len(scene["nodes"]),
+            "edges": len(scene["edges"]),
+            "images": sum("bbox" in a for a in scene.get("assets", [])),
+            "generated_figures": sum(
+                "figure_bbox" in a for a in scene.get("assets", [])
+            ),
+            "missing_nodes": [],
+            "missing_edges": [],
+            "missing_assets": [],
+        },
         "pdf_check": pdf_check,
         "pdf_scale": scale,
         "pdf_min_text_pt": minimum,

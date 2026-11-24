@@ -25,7 +25,7 @@ def test_same_year_cards_share_a_row_and_keep_authored_date_precision():
     scene = layout(data)
     assert layout(data) == scene
     same = [n for n in scene["nodes"] if n["anchor_year"] == 1944]
-    assert len({n["lane_id"] for n in same}) == 3
+    assert len({n["bbox"][0] for n in same}) == 3
     assert max(n["bbox"][1] for n in same) - min(n["bbox"][1] for n in same) <= 14
     assert (
         max(n["bbox"][1] + n["bbox"][3] for n in same)
@@ -40,6 +40,8 @@ def test_relationship_outweighs_category_and_keeps_uncertain_interval():
     source, target = data["nodes"][:2]
     source["type"], target["type"] = "concept", "event"
     target["dates"] = [{"earliest": 1947, "latest": 1953}]
+    add_node(data, "node_a", -100)
+    add_node(data, "node_z", 1950)
     base = layout({**data, "edges": []})
     linked = layout(
         data,

@@ -18,6 +18,7 @@ from .store import (
     read_progress,
     resume,
     save_illustrations,
+    save_representatives,
     update_manifest,
     update_task,
     verify_generation,
@@ -64,6 +65,12 @@ def build_parser():
     a.add_argument(
         "--complete", action="store_true", help="Finalize against the active generation"
     )
+    a = s.add_parser(
+        "representatives-save", help="Checkpoint representative-subject research"
+    )
+    a.add_argument("run")
+    a.add_argument("report", type=Path)
+    a.add_argument("--complete", action="store_true")
     a = s.add_parser("status")
     a.add_argument("run")
     a = s.add_parser("resume")
@@ -115,6 +122,9 @@ def main(argv=None):
         elif args.command == "illustrations-save":
             report = json.loads(args.report.read_text(encoding="utf-8"))
             output(save_illustrations(args.run, report, complete=args.complete))
+        elif args.command == "representatives-save":
+            report = json.loads(args.report.read_text(encoding="utf-8"))
+            output(save_representatives(args.run, report, complete=args.complete))
         elif args.command == "status":
             output(read_progress(args.run))
         elif args.command == "resume":
@@ -182,6 +192,7 @@ def main(argv=None):
                     "generation": generation,
                     "scene": qa["scene"],
                     "illustrations": qa["illustrations"],
+                    "representatives": qa["representatives"],
                     "note": "Review flags must be supported by actual agent evidence, not invented",
                 }
                 atomic_json(Path(args.run) / "qa" / "illustration-result.json", result)

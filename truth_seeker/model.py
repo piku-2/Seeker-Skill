@@ -278,7 +278,14 @@ def validate(records_by_type):
         required(m, ["from_id", "to_id", "reason", "generation"], "merge_history")
     for asset in data["assets"]:
         kind = asset.get("asset_type")
-        if kind in ("photo", "primary_document", "diagram", "map", "chart"):
+        if kind in (
+            "photo",
+            "primary_document",
+            "diagram",
+            "map",
+            "chart",
+            "generated",
+        ):
             key = asset["id"]
             owners = asset.get("related_node_ids", [])
             ensure(
@@ -318,6 +325,10 @@ def validate(records_by_type):
                 and bool((asset.get("caption") or asset.get("title")).strip()),
                 f"{key}: illustration requires a caption",
             )
+            if kind == "generated":
+                from .figures import validate_figure
+
+                validate_figure(asset, nodes, edges, evidence, claims)
     return {
         "counts": {k: len(v) for k, v in data.items()},
         "adopted_node_ids": sorted(

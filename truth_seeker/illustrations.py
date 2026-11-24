@@ -124,17 +124,16 @@ def validate_search(report, data):
         decision, rights = item.get("decision"), item.get("rights")
         ensure(
             decision in ("adopted", "rejected")
-            and rights in ("cleared", "unknown", "restricted"),
+            and rights in ("cleared", "unknown", "restricted", "original"),
             f"illustrations: unresolved candidate {key}",
         )
         if decision == "adopted":
             asset_id = item.get("asset_id")
             ensure(
-                rights == "cleared"
-                and _text(item.get("rights_note"))
-                and _url(item.get("rights_url")),
+                rights in ("cleared", "original"),
                 f"illustrations: candidate {key} lacks verified reuse information",
             )
+
             ensure(
                 _text(asset_id)
                 and asset_id in required
@@ -143,6 +142,19 @@ def validate_search(report, data):
                 f"illustrations: candidate {key} differs from its registered asset or owners",
             )
             record = assets[asset_id]
+            if record.get("asset_type") == "generated":
+                ensure(
+                    rights == "original" and _text(item.get("rights_note")),
+                    f"illustrations: candidate {key} lacks original-figure attribution",
+                )
+            else:
+                ensure(
+                    rights == "cleared"
+                    and _text(item.get("rights_note"))
+                    and _url(item.get("rights_url")),
+                    f"illustrations: candidate {key} lacks verified reuse information",
+                )
+
             sources = [record.get("source_url"), record.get("source_page_url")]
             sources.extend(
                 evidence[eid]["source_url"]

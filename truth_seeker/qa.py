@@ -5,10 +5,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from .illustrations import validate_search, validate_visual_review
-from .model import ensure, validate
+from .model import ValidationError, ensure, validate
 from .render import check_saved_artifacts
+from .representatives import KIND, validate_representatives
 from .scene import _asset_image, check_scene
-from .store import illustration_task
+from .store import illustration_task, research_task
 
 
 def classify(
@@ -25,10 +26,13 @@ def classify(
 
 def _illustration_qa(data, scene, review, progress, run_dir):
     task = illustration_task(progress) if progress else None
-    count = sum("bbox" in asset for asset in scene.get("assets", []))
+    images = sum("bbox" in asset for asset in scene.get("assets", []))
+    figures = sum("figure_bbox" in asset for asset in scene.get("assets", []))
+    count = images + figures
     result = {
         "status": "fail",
-        "image_count": count,
+        "image_count": images,
+        "generated_figure_count": figures,
         "task_status": task["status"] if task else "missing",
     }
     try:
@@ -44,7 +48,9 @@ def _illustration_qa(data, scene, review, progress, run_dir):
         )
         asset_ids = validate_search(task["illustration_report"], data)
         drawn = {
-            asset["id"]: asset for asset in scene.get("assets", []) if "bbox" in asset
+            asset["id"]: asset
+            for asset in scene.get("assets", [])
+            if "bbox" in asset or "figure_bbox" in asset
         }
         ensure(
             drawn.keys() == asset_ids and len(drawn) == count,
@@ -60,6 +66,8 @@ def _illustration_qa(data, scene, review, progress, run_dir):
             run_dir is not None, "illustrations: saved artifacts are required for QA"
         )
         for key, asset in drawn.items():
+            if "figure_bbox" in asset:
+                continue
             raw, mime, _ = _asset_image(asset["record"], run_dir)
             ensure(
                 mime == asset["mime"]
@@ -83,13 +91,41 @@ def _illustration_qa(data, scene, review, progress, run_dir):
     return result
 
 
+def _representative_qa(data, review, progress):
+    task = research_task(progress, KIND) if progress else None
+    try:
+        ensure(
+            task is not None and task["status"] == "completed",
+            "representatives: search is unfinished or missing",
+        )
+        generation = progress["active_generation"]
+        ensure(
+            task.get("representative_generation") == generation
+            and review.get("generation") == generation,
+            "representatives: recheck search and review for the active generation",
+        )
+        count = validate_representatives(task.get("representative_report"), data)
+        assessment = review.get("representative_review")
+        ensure(
+            isinstance(assessment, dict)
+            and assessment.get("coverage_adequate") is True
+            and isinstance(assessment.get("findings"), str)
+            and assessment["findings"].strip(),
+            "representatives: coverage has not passed review",
+        )
+    except (ValidationError, ValueError) as exc:
+        return {"status": "fail", "reason": str(exc)}
+    return {"status": "pass", "candidate_count": count}
+
+
 def judge(data, scene, review, *, progress=None, run_dir=None):
     v = validate(data)
     g = check_scene(scene, data)
     illustrations = _illustration_qa(data, scene, review, progress, run_dir)
+    representatives = _representative_qa(data, review, progress)
     st = classify(
         review.get("research_complete") is True,
-        illustrations["status"] == "pass",
+        illustrations["status"] == "pass" and representatives["status"] == "pass",
         review.get("semantic_pass") is True,
         review.get("artifact_pass") is True,
         review.get("independent_review", "not_run"),
@@ -99,5 +135,6 @@ def judge(data, scene, review, *, progress=None, run_dir=None):
         "graph": v,
         "scene": g,
         "illustrations": illustrations,
+        "representatives": representatives,
         "review": review,
     }

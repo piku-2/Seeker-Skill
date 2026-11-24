@@ -11,8 +11,9 @@ from pathlib import Path
 
 from PIL import Image
 
+from .figures import draw_figure, preferred_width
 from .model import LayoutError, ensure, validate, validate_importance
-from .placement import place_rows
+from .placement import ROW_GAP, place_rows
 from .routing import (
     NORMALS,
     bounds,
@@ -228,7 +229,7 @@ def _saved_figure(run_dir, record):
 
 
 def _asset_image(record, run_dir):
-    if record.get("asset_type") == "external_reference":
+    if record.get("asset_type") in ("external_reference", "generated"):
         return None
     if run_dir is None:
         raise ValueError(f"{record['id']}: run directory required for registered image")
@@ -270,7 +271,9 @@ def _prepare_assets(nodes, data, run_dir, evidence):
         )
         for key in owner_ids:
             nodes[key]["asset_refs"].append(record["id"])
-        primary = owner_ids[0] if owner_ids else None
+        primary = (
+            owner_ids[0] if owner_ids and record.get("placement") != "gallery" else None
+        )
         try:
             image = _asset_image(record, run_dir)
         except (OSError, ValueError, KeyError, ImportError) as exc:
@@ -285,7 +288,18 @@ def _prepare_assets(nodes, data, run_dir, evidence):
             )
             if primary:
                 node = nodes[primary]
-                node["figure_min_width"] = 250 + 25 * node["importance"]["level"]
+                node["figure_min_width"] = max(
+                    node.get("figure_min_width", 0),
+                    250 + 25 * node["importance"]["level"],
+                )
+        if record.get("asset_type") == "generated":
+            asset["preferred_width"] = preferred_width(record["figure"])
+            if primary:
+                node = nodes[primary]
+                pad = LEVEL_STYLE[node["importance"]["level"] - 1][2]
+                node["figure_min_width"] = max(
+                    node.get("figure_min_width", 0), asset["preferred_width"] + 2 * pad
+                )
         urls = [record.get("source_page_url"), record.get("source_url")]
         urls.extend(
             evidence[k]["source_url"]
@@ -310,7 +324,7 @@ def _asset_owners(record):
     return (set(record.get("related_node_ids", [])) | {record.get("node_id")}) - {None}
 
 
-def _layout_asset(asset, x, cursor, width, max_height):
+def _layout_asset(asset, x, cursor, width, max_height, nodes, edges):
     top = cursor
     if "image_size" in asset:
         iw, ih = asset["image_size"]
@@ -322,6 +336,13 @@ def _layout_asset(asset, x, cursor, width, max_height):
             ih * factor,
         ]
         cursor += ih * factor + 8
+    diagram_lines = []
+    if asset["record"].get("asset_type") == "generated":
+        shapes, diagram_lines, end = draw_figure(
+            asset["record"]["figure"], x, cursor, width, nodes, edges
+        )
+        asset.update(shapes=shapes, figure_bbox=[x, cursor, width, end - cursor])
+        cursor = end + 8
     asset["text_lines"] = text_lines(
         asset["caption"], x, cursor, width, 9, "#243747", "asset_caption"
     )
@@ -333,6 +354,7 @@ def _layout_asset(asset, x, cursor, width, max_height):
         for line in lines:
             line["source_url"] = url
         asset["text_lines"].extend(lines)
+    asset["text_lines"][:0] = diagram_lines
     bottom = _end(asset["text_lines"])
     asset["reserved_bbox"] = [x, top, width, bottom - top]
     return bottom
@@ -347,7 +369,10 @@ def _offset_text(lines, x, y):
 
 
 def _move_asset(asset, x, y):
-    for field in ("reserved_bbox", "bbox"):
+    for shape in asset.get("shapes", []):
+        shape["bbox"][0] += x
+        shape["bbox"][1] += y
+    for field in ("reserved_bbox", "bbox", "figure_bbox"):
         if field in asset:
             asset[field][0] += x
             asset[field][1] += y
@@ -393,7 +418,6 @@ def layout(
     ]
 
     positions = {}
-    preferred_widths = [NODE_W] * len(CATEGORY_GROUPS)
     edge_weights = {
         e["id"]: importance.get(e["id"], e.get("importance", DEFAULT_IMPORTANCE)).copy()
         for e in edges
@@ -434,6 +458,15 @@ def layout(
         }
         positions[n["id"]] = node
 
+    graph_edges = {
+        edge["id"]: {
+            **edge,
+            "assessments": sorted(
+                {claims[cid]["assessment"] for cid in edge["claim_ids"]}
+            ),
+        }
+        for edge in edges
+    }
     assets = _prepare_assets(positions, data, run_dir, evidence)
     by_owner = defaultdict(list)
     for asset in assets:
@@ -450,35 +483,34 @@ def layout(
                     h + 4,
                     w - 2 * pad,
                     240 + 10 * (node["importance"]["level"] - 2),
+                    positions,
+                    graph_edges,
                 )
                 + pad
             )
         node.update(bbox=[0, 0, w, h], text_lines=lines)
         groups[node["anchor_year"]].append(node)
-        category = node["category_id"]
-        preferred_widths[category] = max(preferred_widths[category], w)
-
     years = sorted(year for year in groups if year is not None)
-    bands = place_rows(
+    chronology = {
+        year: max(78, 80 * math.asinh((later - year) / 25))
+        for year, later in zip(years, years[1:])
+    }
+    for year in [*years, None]:
+        chronology.setdefault(year, 78 if year is not None else 0)
+    axis_labels = [date_text(year) for year in [*years, None]]
+    gutter_left = max(105, max(measure(label, 10)[2] for label in axis_labels) + 35)
+    content_x = gutter_left + GUTTER
+    content_floor = max(
+        (asset.get("preferred_width", 0) for asset in by_owner[None]), default=0
+    )
+    bands, content_width = place_rows(
         {year: groups[year] for year in [*years, None]},
         edges,
-        len(CATEGORY_GROUPS),
-        preferred_widths,
         edge_weights,
+        chronology,
+        content_floor,
     )
-    # Continuous gutters leave the router a clear vertical detour in every track.
-    lane_widths = [w + 2 * GUTTER + (8 if w > NODE_W else 0) for w in preferred_widths]
-    for rows in bands.values():
-        for row in rows:
-            for col, node in row:
-                lane_widths[col] = max(lane_widths[col], node["bbox"][2] + 2 * GUTTER)
-    axis_labels = [date_text(year) for year in [*years, None]]
-    lane_x = max(135, max(measure(label, 10)[2] for label in axis_labels) + 40)
-    lanes = []
-    for i, lane_width in enumerate(lane_widths):
-        lanes.append({"id": i, "x": lane_x, "width": lane_width})
-        lane_x += lane_width
-    width = lane_x + 42
+    width = content_x + content_width + GUTTER + 26
     title_lines = text_lines(title, 44, 34, width - 88, 23, "#243747", "map_title")
     legend = text_lines(
         LEGEND, 44, _end(title_lines) + 9, width - 88, 10, "#243747", "legend"
@@ -505,6 +537,9 @@ def layout(
         top = _end(key_lines or legend) + 6
         x = 45
         for label, color in items:
+            if x + measure("■ " + label, 10)[2] + 35 > width:
+                x = 45
+                top = _end(key_lines) + 3
             line = text_lines(
                 "■ " + label, x, top, width - x - 30, 10, color, "color_key"
             )[0]
@@ -512,28 +547,29 @@ def layout(
             x += line["bbox"][2] + 17
     track_top = _end(key_lines) + 14
     markers, shown, obstacles, anchors = [], [], {}, []
+    shelves = {}
     y = max(track_top + 22, 155)
     for i, year in enumerate([*years, None]):
         if year is not None:
             anchors.append([year, y])
         label = text_lines(
-            date_text(year), 9, y - 19, lanes[0]["x"] - 24, 10, "#526474", "axis_label"
+            date_text(year), 9, y - 19, gutter_left - 20, 10, "#526474", "axis_label"
         )[0]
         markers.append(label)
         obstacles[f"axis:{year}"] = label["bbox"]
         cursor = y
         for row in bands[year]:
             row_height = max(node["bbox"][3] for _, node in row)
-            for col, node in row:
-                lane = lanes[col]
+            for offset, node in row:
                 _, _, w, h = node["bbox"]
-                x = lane["x"] + (lane["width"] - w) / 2
+                x = content_x + offset
                 # Stagger shorter cards slightly within a row, keeping every
                 # rectangle strictly inside the same chronological band.
                 top = cursor + min(14, (row_height - h) / 2)
-                node.update(lane_id=col, bbox=[x, top, w, h], anchor=[x + w / 2, y])
+                node.update(bbox=[x, top, w, h], anchor=[x + w / 2, y])
+                shelves[node["node_id"]] = (cursor - 16, cursor + row_height + 16)
                 if top > y:
-                    guide_x = lane["x"] + 25
+                    guide_x = x - 8
                     node["anchor_leader"] = [
                         [guide_x, y],
                         [guide_x, top + h / 2],
@@ -544,25 +580,17 @@ def layout(
                     _move_asset(asset, x, top)
                 obstacles[node["node_id"]] = node["bbox"]
                 shown.append(node)
-            cursor += row_height + 32
+            cursor += row_height + ROW_GAP
         band_bottom = cursor
         if year is not None:
-            next_year = years[i + 1] if i + 1 < len(years) else None
-            chronological = (
-                max(78, 80 * math.asinh((next_year - year) / 25))
-                if next_year is not None
-                else 78
-            )
-            y = max(y + chronological, band_bottom + 3)
+            y = max(y + chronology[year], band_bottom + 1)
 
-    columns = [
-        lane["x"] + offset
-        for lane in lanes
-        for offset in (10, 19, lane["width"] - 19, lane["width"] - 10)
-    ]
+    columns = (gutter_left + 8, width - 39)
     drawn_edges = []
     ranked = sorted(edges, key=lambda e: (-edge_weights[e["id"]]["level"], e["id"]))
-    for edge, start, end, path in route_edges(ranked, positions, obstacles, columns):
+    for edge, start, end, path in route_edges(
+        ranked, positions, obstacles, columns, shelves=shelves
+    ):
         weight = edge_weights[edge["id"]]
         assessments = sorted({claims[cid]["assessment"] for cid in edge["claim_ids"]})
         style = _edge_style(edge["relation_type"], weight["level"], assessments)
@@ -619,7 +647,16 @@ def layout(
     gallery_cursor = gallery_top
     for asset in by_owner[None]:
         gallery_cursor = (
-            _layout_asset(asset, 44, gallery_cursor, min(width - 88, 560), 260) + 22
+            _layout_asset(
+                asset,
+                44,
+                gallery_cursor,
+                min(width - 88, max(560, asset.get("preferred_width", 0))),
+                260,
+                positions,
+                graph_edges,
+            )
+            + 22
         )
 
     out = {
@@ -636,7 +673,7 @@ def layout(
             "unknown_y": y,
             "labels": markers,
         },
-        "lane_definitions": lanes,
+        "content_x": content_x,
         "lane_top": track_top,
         "header_lines": title_lines + legend + key_lines,
         "nodes": shown,
@@ -647,7 +684,7 @@ def layout(
         "expected_node_ids": checked["adopted_node_ids"],
         "expected_edge_ids": checked["adopted_edge_ids"],
         "edge_endpoints": {e["id"]: [e["source_id"], e["target_id"]] for e in edges},
-        "layout_revision": 3,
+        "layout_revision": 4,
         "asset_layout_version": 2,
         "assets": assets,
         "gallery_y": gallery_top,
@@ -813,7 +850,11 @@ def _check_inline_assets(scene, nodes, data, canvas, inline):
             key = asset["id"]
             owners = _asset_owners(record) & nodes.keys()
             _require(
-                ({owner} <= owners if owners else owner is None)
+                (
+                    owner is None
+                    if record.get("placement") == "gallery"
+                    else ({owner} <= owners if owners else owner is None)
+                )
                 and {k for k, n in nodes.items() if key in n["asset_refs"]} == owners,
                 "asset_owner",
                 f"{key}: incorrect asset owner",
@@ -830,7 +871,52 @@ def _check_inline_assets(scene, nodes, data, canvas, inline):
             )
             text = asset["text_lines"]
             boxes = []
-            if record.get("asset_type") != "external_reference":
+            if record.get("asset_type") == "generated":
+                box = asset.get("figure_bbox")
+                _require(
+                    box is not None and _inside(padded(box, 0), padded(area, 0)),
+                    "asset_bounds",
+                    f"{key}: vector figure outside reserved area",
+                    asset_id=key,
+                )
+                graph_edges = {
+                    e["edge_id"]: {
+                        **e,
+                        "source_id": e["source_node_id"],
+                        "target_id": e["target_node_id"],
+                    }
+                    for e in scene["edges"]
+                }
+                shapes, lines, _ = draw_figure(
+                    record["figure"], box[0], box[1], box[2], nodes, graph_edges
+                )
+                actual = asset.get("shapes", [])
+                _require(
+                    len(actual) == len(shapes)
+                    and all(
+                        a["fill"] == b["fill"]
+                        and math.dist(a["bbox"], b["bbox"]) < 1e-6
+                        for a, b in zip(actual, shapes)
+                    ),
+                    "asset_image",
+                    f"{key}: vector geometry differs from figure",
+                    asset_id=key,
+                )
+                seen = [line for line in text if line["role"] == "figure_label"]
+                _require(
+                    len(seen) == len(lines)
+                    and all(
+                        a["text"] == b["text"]
+                        and math.dist(a["bbox"], b["bbox"]) < 1e-6
+                        for a, b in zip(seen, lines)
+                    ),
+                    "asset_text",
+                    f"{key}: vector labels differ from figure",
+                    asset_id=key,
+                )
+                boxes.append(box)
+                text = [line for line in text if line["role"] != "figure_label"]
+            elif record.get("asset_type") != "external_reference":
                 _require(
                     bool(asset.get("image_data")) and "bbox" in asset,
                     "asset_image",
@@ -873,9 +959,9 @@ def _check_inline_assets(scene, nodes, data, canvas, inline):
 
 
 def check_scene(scene, data=None):
-    flexible = scene.get("layout_revision") == 3
+    flexible = scene.get("layout_revision") in (3, 4)
     _require(
-        scene.get("layout_revision") in (2, 3),
+        scene.get("layout_revision") in (2, 3, 4),
         "layout_revision",
         "unsupported scene layout revision",
     )
@@ -957,7 +1043,7 @@ def check_scene(scene, data=None):
         for asset in scene["assets"]:
             inline[asset["owner_id"]].append(asset)
     active = []
-    lanes = {lane["id"]: lane for lane in scene["lane_definitions"]}
+    lanes = {lane["id"]: lane for lane in scene.get("lane_definitions", [])}
     for n in sorted(nodes.values(), key=lambda node: node["bbox"][1]):
         key = n["node_id"]
         x, y, w, h = n["bbox"]
@@ -989,14 +1075,27 @@ def check_scene(scene, data=None):
             f"{key}: invalid category or importance styling",
             node_id=key,
         )
-        lane = lanes.get(n["lane_id"])
+        if scene["layout_revision"] < 4:
+            lane = lanes.get(n["lane_id"])
+            _require(
+                lane is not None
+                and lane["x"] <= x
+                and x + w <= lane["x"] + lane["width"],
+                "node_lane",
+                f"{key}: node outside its track",
+                node_id=key,
+            )
+        else:
+            _require(
+                x >= scene["content_x"],
+                "node_bounds",
+                f"{key}: node in the time ruler",
+                node_id=key,
+            )
         _require(
-            lane is not None
-            and (n.get("category_id", n["lane_id"]) == LANE_BY_TYPE[n["type"]])
-            and lane["x"] <= x
-            and x + w <= lane["x"] + lane["width"],
-            "node_lane",
-            f"{key}: node outside its track",
+            n.get("category_id", n.get("lane_id")) == LANE_BY_TYPE[n["type"]],
+            "node_style",
+            f"{key}: invalid category",
             node_id=key,
         )
         year = n["anchor_year"]
