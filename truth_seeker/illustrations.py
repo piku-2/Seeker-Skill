@@ -124,13 +124,13 @@ def validate_search(report, data):
         decision, rights = item.get("decision"), item.get("rights")
         ensure(
             decision in ("adopted", "rejected")
-            and rights in ("cleared", "unknown", "restricted", "original"),
+            and rights in ("cleared", "unknown", "restricted", "original", "scoped"),
             f"illustrations: unresolved candidate {key}",
         )
         if decision == "adopted":
             asset_id = item.get("asset_id")
             ensure(
-                rights in ("cleared", "original"),
+                rights in ("cleared", "original", "scoped"),
                 f"illustrations: candidate {key} lacks verified reuse information",
             )
 
@@ -149,7 +149,11 @@ def validate_search(report, data):
                 )
             else:
                 ensure(
-                    rights == "cleared"
+                    (
+                        rights == "scoped"
+                        if "image_use" in record
+                        else rights == "cleared"
+                    )
                     and _text(item.get("rights_note"))
                     and _url(item.get("rights_url")),
                     f"illustrations: candidate {key} lacks verified reuse information",

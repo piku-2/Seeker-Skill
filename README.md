@@ -80,6 +80,8 @@ uv run pytest -v -rs
 
 `photo-candidates <run>` で重要ノードと採用済みの代表対象を確認する。実画像の探索・取得・権利・採否を `illustrations-save` の `photo_plan` で記録し、`image-inspect <path>` で取得内容を点検できる。完了時は、実写真・実物史料の代表対象カバレッジと各出力への掲載を、生成図表とは別に確認する。[写真のデータ契約](references/data-contract.md#documentary-image-coverage)
 
+作品パッケージ、書影、公式ビジュアル、ゲーム画面も対象に含める。`images-save` で取得後のファイルと候補をまとめて保存し、`images-stage` で確認済みの掲載可否に応じて登録する。`render --image-profile local` の個人閲覧用は標準の配布向けフォルダと分かれ、個別に確認した利用条件に従う。[画像収集と出力設定](references/data-contract.md#collecting-images-before-an-embedding-decision)
+
 ### 動的配置・図表・代表例
 
 年代帯の中でカードと複数ノードの図表の寸法を使って配置を調整する。研究上の推定範囲と、明示的な先後関係による配置目安を区別し、根拠が足りない場合は年代不明の理由を記録する。

@@ -14,6 +14,7 @@ from truth_seeker.model import ValidationError, load_generation, validate
 from truth_seeker.qa import judge
 from truth_seeker.render import emit, layout
 from truth_seeker.store import (
+    add_task,
     commit_generation,
     create_run,
     illustration_task,
@@ -21,6 +22,7 @@ from truth_seeker.store import (
     resume,
     save_illustrations,
     save_representatives,
+    update_task,
 )
 
 SOURCE = "https://example.org/fixture/object"
@@ -239,6 +241,43 @@ def test_documented_zero_images_retains_review_statuses(tmp_path, independent, s
     assert outcome["illustrations"]["status"] == "pass"
     assert outcome["illustrations"]["formats"] == {"svg": 0, "html": 0}
     assert outcome["illustrations"]["zero_reason"] == search["zero_reason"]
+
+
+def test_cli_qa_requires_research_tasks_to_be_resolved(tmp_path, capsys):
+    run = create_run(tmp_path, "調査タスクの完了判定")
+    data = sample()
+    generation = commit_generation(run, data)
+    save_illustrations(run, search_fixture(), complete=True)
+    save_representatives(run, representative_fixture(), complete=True)
+    render_fixture(run, data, force_pdf_error=True)
+    review = tmp_path / "review.json"
+    review.write_text(json.dumps(review_fixture(generation)))
+
+    task = add_task(run, "文献の照合")
+    replaced_task = add_task(run, "旧調査計画")
+    update_task(run, replaced_task["task_id"], "superseded")
+    command = ["qa", str(run), "--review", str(review)]
+    for status in ("pending", "running", "retryable", "blocked"):
+        update_task(run, task["task_id"], status)
+        assert main(command) == 0
+        result = json.loads(capsys.readouterr().out)
+        assert result["status"] == "incomplete"
+        assert result["run_status"] == read_progress(run)["run_status"] == "paused"
+        assert result["illustrations"]["status"] == "pass"
+        assert result["unfinished_tasks"] == [
+            {"task_id": task["task_id"], "topic": "文献の照合", "status": status}
+        ]
+        saved = run / "qa" / generation / "result.json"
+        assert json.loads(saved.read_text())["unfinished_tasks"] == result[
+            "unfinished_tasks"
+        ]
+
+    update_task(run, task["task_id"], "completed")
+    assert main(command) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "complete"
+    assert result["run_status"] == read_progress(run)["run_status"] == "complete"
+    assert result["unfinished_tasks"] == []
 
 
 def test_draft_survives_resume_and_unresolved_candidate_blocks_completion(tmp_path):

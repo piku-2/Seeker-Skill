@@ -75,6 +75,7 @@ python -m truth_seeker resume <run_dir>
 - `blocked` タスクは、レートリミットや資料制約が解消して再試行可能になった場合だけ `retryable` に戻して処理する。
 - 新しい意味のある調査分岐が見つかった場合のみ `task-add` で既存runへ追加する。これは新runではなく既存runのタスク追加である。
 - 途中タスクの証拠・参照・mergeに問題がない場合のみ `task-update ... completed` にする。
+- `images-status <run>` で写真・作品画像の収集記録を引き継ぐ。公式の提供ページと画像本体を別々に扱い、未取得・確認待ち・掲載保留の候補を再点検する。掲載条件を更新したら `images-stage` で次世代に反映し、個人閲覧用と配布向けを同じ設定で混在させない。
 - 写真・実物史料の `photo_plan` を引き継ぐ。`photo-candidates <run>` で採用済み代表対象や新しいノードとの差分を確認し、検索・権利・取得・掲載の未完了箇所を再開する。取得不能は試行と代替探索を記録し、検索不可を候補なしと扱わない。
 - 図版探索は保存済みの検索結果や候補を引き継ぎ、未確認の出典・利用条件・採否を優先する。`illustrations-save` で途中経過を保存し、図版登録を含むmergeの後に `--complete` を付けて現行generationに対して確定する。保存済みの `figure_plan` と登録済みの図表を引き継ぎ、`figure-candidates <generation_dir>` で新版の候補との差分を確認する。年代推定は保存済みstagingやgenerationを引き継ぎ、物語の年代と文献の各成立段階を区別して根拠・不確実性を補う。詳細は [データ契約](references/data-contract.md) を参照。
 - 代表的対象の探索は `representatives-save` で保存し、採用ノードを含むmergeの後に `--complete` で確定する。確認済みの出典を元に図表を作成する場合は、その根拠を記録する。

@@ -8,6 +8,13 @@ from pathlib import Path
 from .chronology import is_text
 from .figure_plan import validate_plan, validate_review
 from .illustrations import validate_search, validate_visual_review
+from .images import (
+    audit_catalog,
+    catalog_summary,
+    read_catalog,
+    scoped_data,
+    scoped_report,
+)
 from .model import ValidationError, ensure, validate
 from .photos import (
     DOCUMENTARY_TYPES,
@@ -83,7 +90,10 @@ def _illustration_qa(data, scene, review, progress, run_dir):
                 and raw == base64.b64decode(asset["image_data"], validate=True),
                 f"illustrations: saved payload for {key} differs from the rendered image",
             )
-        result["formats"] = check_saved_artifacts(scene, Path(run_dir) / "render")
+        directory = (
+            "render-local" if scene.get("image_profile") == "local" else "render"
+        )
+        result["formats"] = check_saved_artifacts(scene, Path(run_dir) / directory)
     except (
         ValueError,
         OSError,
@@ -195,6 +205,9 @@ def _photo_qa(data, scene, review, progress, illustrations, representatives):
                 "other_documentary_count": sum(
                     a["record"].get("asset_type") == "visual_source" for a in drawn
                 ),
+                "work_visual_count": sum(
+                    a["record"].get("asset_type") == "work_visual" for a in drawn
+                ),
                 "external_raster_count": len(nonvector) - len(drawn),
                 "verified_documentary_images": len(drawn),
                 "formats": dict.fromkeys(illustrations["formats"], len(drawn)),
@@ -228,19 +241,73 @@ def _photo_qa(data, scene, review, progress, illustrations, representatives):
     return result
 
 
+def _catalog_qa(data, scene, report, run_dir):
+    if run_dir is None:
+        return (
+            {"status": "fail", "reason": "images: saved catalog required"}
+            if any("catalog_id" in asset for asset in data["assets"])
+            else {"status": "pass"}
+        )
+    catalog = read_catalog(run_dir)
+    summary = catalog_summary(catalog)
+    result = {key: value for key, value in summary.items() if key != "candidates"}
+    result["rendered"] = sum(
+        "catalog_id" in item.get("record", {}) and "bbox" in item
+        for item in scene.get("assets", [])
+    )
+    result["rendered_by_kind"] = {
+        kind: sum(
+            a.get("record", {}).get("asset_type") == kind and "bbox" in a
+            for a in scene.get("assets", [])
+        )
+        for kind in DOCUMENTARY_TYPES
+    }
+    try:
+        audit_catalog(catalog, data, report, run_dir)
+    except (OSError, ValidationError) as exc:
+        return {"status": "fail", "reason": str(exc), **result}
+    return {"status": "pass", **result}
+
+
 def judge(data, scene, review, *, progress=None, run_dir=None):
     v = validate(data)
     g = check_scene(scene, data)
+    profile = scene.get("image_profile", "distribution")
+    task = illustration_task(progress) if progress else None
+    report = (task or {}).get("illustration_report", {})
+    catalog = _catalog_qa(data, scene, report, run_dir)
+    if task is not None and any("image_use" in asset for asset in data["assets"]):
+        projected_task = {
+            **task,
+            "illustration_report": scoped_report(report, data, profile),
+        }
+        progress = {
+            **progress,
+            "tasks": [projected_task if t is task else t for t in progress["tasks"]],
+        }
+    data = scoped_data(data, profile)
     illustrations = _illustration_qa(data, scene, review, progress, run_dir)
     representatives = _representative_qa(data, review, progress)
     chronology = _chronology_qa(data, review)
     figures = _figure_qa(data, review, progress, illustrations)
     photos = _photo_qa(data, scene, review, progress, illustrations, representatives)
+    unfinished_tasks = [
+        {key: task[key] for key in ("task_id", "topic", "status")}
+        for task in (progress or {}).get("tasks", [])
+        if task["status"] not in ("completed", "superseded")
+    ]
     st = classify(
-        review.get("research_complete") is True,
+        review.get("research_complete") is True and not unfinished_tasks,
         all(
             check["status"] == "pass"
-            for check in (illustrations, representatives, chronology, figures, photos)
+            for check in (
+                illustrations,
+                representatives,
+                chronology,
+                figures,
+                photos,
+                catalog,
+            )
         ),
         review.get("semantic_pass") is True,
         review.get("artifact_pass") is True,
@@ -249,11 +316,13 @@ def judge(data, scene, review, *, progress=None, run_dir=None):
     return {
         "status": st,
         "graph": v,
+        "unfinished_tasks": unfinished_tasks,
         "scene": g,
         "illustrations": illustrations,
         "representatives": representatives,
         "chronology": chronology,
         "figures": figures,
         "photos": photos,
+        "image_catalog": catalog,
         "review": review,
     }

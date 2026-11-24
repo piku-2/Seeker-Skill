@@ -92,6 +92,20 @@ def build_parser():
         help="Decode a downloaded image and report its size and checksum",
     )
     a.add_argument("path", type=Path)
+    a = s.add_parser(
+        "images-save", help="Import image candidates and local files in a batch"
+    )
+    a.add_argument("run")
+    a.add_argument("batch", type=Path)
+    a = s.add_parser(
+        "images-status", help="Show candidate sources, acquisition and use decisions"
+    )
+    a.add_argument("run")
+    a = s.add_parser(
+        "images-stage", help="Prepare approved images in a staging generation"
+    )
+    a.add_argument("run")
+    a.add_argument("stage", type=Path)
     a = s.add_parser("font-check", help="Find unsupported characters before rendering")
     a.add_argument("generation", type=Path, help="Staged or saved generation directory")
     a.add_argument(
@@ -105,6 +119,9 @@ def build_parser():
     )
     a = s.add_parser("render")
     a.add_argument("run")
+    a.add_argument(
+        "--image-profile", choices=("distribution", "local"), default="distribution"
+    )
     a.add_argument("--force-pdf-error", action="store_true")
     a.add_argument(
         "--importance",
@@ -113,6 +130,9 @@ def build_parser():
     )
     a = s.add_parser("qa")
     a.add_argument("run")
+    a.add_argument(
+        "--image-profile", choices=("distribution", "local"), default="distribution"
+    )
     a.add_argument(
         "--review",
         required=True,
@@ -180,6 +200,22 @@ def main(argv=None):
             from .scene import inspect_image
 
             output(inspect_image(args.path))
+        elif args.command == "images-save":
+            from .images import save_catalog
+
+            output(
+                save_catalog(
+                    args.run, json.loads(args.batch.read_text(encoding="utf-8"))
+                )
+            )
+        elif args.command == "images-status":
+            from .images import catalog_summary, read_catalog
+
+            output(catalog_summary(read_catalog(args.run)))
+        elif args.command == "images-stage":
+            from .images import stage_catalog
+
+            output(stage_catalog(args.run, args.stage))
         elif args.command == "font-check":
             if not (args.generation / "nodes.jsonl").is_file():
                 raise ValidationError(
@@ -194,10 +230,13 @@ def main(argv=None):
             gen = commit_generation(args.run, data)
             output({"generation": gen, "validation": validate(data)})
         elif args.command == "render":
+            from .images import check_catalog_assets, read_catalog
+
             progress = read_progress(args.run)
             data = load_generation(
                 Path(args.run) / "snapshots" / progress["active_generation"]
             )
+            check_catalog_assets(read_catalog(args.run), data)
             importance = (
                 json.loads(args.importance.read_text(encoding="utf-8"))
                 if args.importance
@@ -209,15 +248,20 @@ def main(argv=None):
                 progress["query"],
                 importance,
                 run_dir=args.run,
+                image_profile=args.image_profile,
             )
             scene["graph_generation"] = progress["active_generation"]
-            result = emit(scene, Path(args.run) / "render", args.force_pdf_error)
+            directory = "render-local" if args.image_profile == "local" else "render"
+            result = emit(scene, Path(args.run) / directory, args.force_pdf_error)
             artifacts = [
                 f"render/{f}"
                 for f in ("scene.json", "map.svg", "map.html", "map.pdf")
                 if (Path(args.run) / "render" / f).exists()
             ]
-            if (Path(args.run) / "manifest.json").exists():
+            if (
+                args.image_profile == "distribution"
+                and (Path(args.run) / "manifest.json").exists()
+            ):
                 update_manifest(args.run, artifacts=artifacts)
             output(result)
         elif args.command == "qa":
@@ -226,29 +270,37 @@ def main(argv=None):
                 generation = progress["active_generation"]
                 verify_generation(args.run, generation)
                 data = load_generation(Path(args.run) / "snapshots" / generation)
+                directory = (
+                    "render-local" if args.image_profile == "local" else "render"
+                )
                 scene = json.loads(
-                    (Path(args.run) / "render" / "scene.json").read_text(
+                    (Path(args.run) / directory / "scene.json").read_text(
                         encoding="utf-8"
                     )
                 )
                 review = json.loads(Path(args.review).read_text(encoding="utf-8"))
+                if scene.get("image_profile", "distribution") != args.image_profile:
+                    raise ValidationError(
+                        "Saved scene belongs to a different image output profile"
+                    )
                 qa = judge(data, scene, review, progress=progress, run_dir=args.run)
                 status = qa["status"]
-                paused = progress["run_status"] == "paused" and any(
-                    task["status"] in ("pending", "running", "retryable", "blocked")
-                    for task in progress["tasks"]
-                )
-                progress["run_status"] = (
-                    "paused" if paused and status == "incomplete" else status
-                )
-                atomic_json(Path(args.run) / "progress.json", progress)
-                if (Path(args.run) / "manifest.json").exists():
-                    update_manifest(args.run, status=progress["run_status"])
+                paused = progress["run_status"] == "paused" and qa["unfinished_tasks"]
+                if args.image_profile == "distribution":
+                    progress["run_status"] = (
+                        "paused" if paused and status == "incomplete" else status
+                    )
+                    atomic_json(Path(args.run) / "progress.json", progress)
+                    if (Path(args.run) / "manifest.json").exists():
+                        update_manifest(args.run, status=progress["run_status"])
                 result = {
                     "status": status,
                     "run_status": progress["run_status"],
                     "generation": generation,
+                    "image_profile": args.image_profile,
+                    "image_catalog": qa["image_catalog"],
                     "scene": qa["scene"],
+                    "unfinished_tasks": qa["unfinished_tasks"],
                     "illustrations": qa["illustrations"],
                     "representatives": qa["representatives"],
                     "chronology": qa["chronology"],
@@ -257,9 +309,14 @@ def main(argv=None):
                     "note": "Review flags must be supported by actual agent evidence, not invented",
                 }
                 qa_dir = Path(args.run) / "qa"
-                atomic_json(qa_dir / generation / "review.json", review)
-                atomic_json(qa_dir / generation / "result.json", result)
-                atomic_json(qa_dir / "illustration-result.json", result)
+                if args.image_profile == "local":
+                    qa_dir = qa_dir / generation / "local"
+                    atomic_json(qa_dir / "review.json", review)
+                    atomic_json(qa_dir / "result.json", result)
+                else:
+                    atomic_json(qa_dir / generation / "review.json", review)
+                    atomic_json(qa_dir / generation / "result.json", result)
+                    atomic_json(qa_dir / "illustration-result.json", result)
             output(result)
         elif args.command == "repair-show":
             output(inspect(".", args.proposal))

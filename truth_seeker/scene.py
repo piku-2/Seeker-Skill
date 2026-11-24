@@ -600,9 +600,20 @@ def _move_asset(asset, x, y):
 
 
 def layout(
-    data, run_id="run_manual", title="歴史知識地図", importance=None, *, run_dir=None
+    data,
+    run_id="run_manual",
+    title="歴史知識地図",
+    importance=None,
+    *,
+    run_dir=None,
+    image_profile="distribution",
 ):
+    from .images import scoped_data
+
     checked = validate(data, include_placements=True)
+    data = scoped_data(data, image_profile)
+    if image_profile == "local":
+        title += "（個人閲覧用）"
     check_font_coverage(data, title, run_id)
     nodes = [n for n in data.get("nodes", []) if n["adoption_status"] == "adopted"]
     edges = [e for e in data.get("edges", []) if e["adoption_status"] == "adopted"]
@@ -918,6 +929,7 @@ def layout(
         "schema_version": "0.5",
         "run_id": run_id,
         "graph_generation": "active",
+        "image_profile": image_profile,
         "title": title,
         "canvas_width": width,
         "canvas_height": max(cursor, gallery_cursor if by_owner[None] else cursor) + 45,
@@ -1254,6 +1266,17 @@ def _check_inline_assets(scene, nodes, data, canvas, inline):
 
 
 def check_scene(scene, data=None):
+    from .images import PROFILES, allowed, scoped_data
+
+    profile = scene.get("image_profile", "distribution")
+    _require(
+        profile in PROFILES
+        and all(allowed(a.get("record", {}), profile) for a in scene.get("assets", [])),
+        "image_profile",
+        "scene contains images outside its authorized profile",
+    )
+    if data is not None:
+        data = scoped_data(data, profile)
     flexible = scene.get("layout_revision") in (3, 4)
     _require(
         scene.get("layout_revision") in (2, 3, 4),

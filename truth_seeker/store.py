@@ -233,12 +233,14 @@ def _ensure_illustration_task(progress):
 
 def save_illustrations(base, report, complete=False):
     from .figure_plan import validate_plan
+    from .images import audit_catalog, read_catalog
     from .photos import validate_photo_search
 
     def validate_report(report, data):
         validate_search(report, data)
         validate_plan(report.get("figure_plan"), data)
         validate_photo_search(report, data)
+        audit_catalog(read_catalog(base), data, report, base)
 
     return _save_research_report(
         base, report, complete, TASK_KIND, TASK_TOPIC, "illustration", validate_report

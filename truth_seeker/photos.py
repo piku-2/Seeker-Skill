@@ -3,10 +3,11 @@
 from collections import Counter, defaultdict
 
 from .illustrations import _ids, _index, _text, _url, searchable_assets
+from .images import IMAGE_TYPES
 from .model import ensure
 from .representatives import subject_nodes
 
-DOCUMENTARY_TYPES = ("photo", "primary_document", "visual_source")
+DOCUMENTARY_TYPES = IMAGE_TYPES
 VISUAL_NODE_TYPES = {
     "person",
     "technology",
@@ -16,6 +17,7 @@ VISUAL_NODE_TYPES = {
     "event",
     "document",
     "place",
+    "product",
 }
 STRATEGIES = {"institution", "catalog_id", "alternate_name", "image_search", "archive"}
 
@@ -149,7 +151,7 @@ def validate_photo_search(report, data, representative_report=None):
             acquisition in ("not_attempted", "failed", "verified"),
             f"photos: unresolved acquisition {key}",
         )
-        cleared = item["rights"] == "cleared"
+        cleared = item["rights"] in ("cleared", "scoped")
         if cleared:
             ensure(
                 _url(item.get("rights_url"))
@@ -216,6 +218,7 @@ def validate_photo_search(report, data, representative_report=None):
                 code == "rights_unavailable"
                 and item["rights"] in ("unknown", "restricted")
             )
+            or (code == "scope_unavailable" and item["rights"] == "restricted")
             or (code == "acquisition_failed" and item["acquisition"] == "failed")
             or (
                 code == "redundant"

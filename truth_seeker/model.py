@@ -328,12 +328,21 @@ def validate(records_by_type, *, include_placements=False):
     chronology = resolve(nodes, edges, claims, evidence)
     for m in data["merge_history"]:
         required(m, ["from_id", "to_id", "reason", "generation"], "merge_history")
+    from .images import WORK_MEDIA, validate_asset_use
+
     for asset in data["assets"]:
+        validate_asset_use(asset)
         kind = asset.get("asset_type")
+        if kind == "work_visual":
+            ensure(
+                asset.get("work_media") in WORK_MEDIA and "image_use" in asset,
+                f"{asset['id']}: work visual needs a subtype and a scoped use decision",
+            )
         if kind in (
             "photo",
             "primary_document",
             "visual_source",
+            "work_visual",
             "diagram",
             "map",
             "chart",
