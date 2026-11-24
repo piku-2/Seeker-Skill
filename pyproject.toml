@@ -6,7 +6,11 @@ name = "truth-seeker"
 version = "1.1.0"
 description = "Personal evidence-based history map and skill repair agent tooling"
 requires-python = ">=3.10"
-dependencies = ["reportlab>=3.6", "Pillow>=9"]
+dependencies = [
+    "reportlab>=3.6",
+    "Pillow>=9",
+    "pymupdf>=1.28.2",
+]
 [project.optional-dependencies]
 test = ["pytest>=7"]
 [project.scripts]
@@ -19,3 +23,8 @@ truth_seeker = ["fonts/*.ttf", "fonts/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
