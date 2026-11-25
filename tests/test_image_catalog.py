@@ -144,6 +144,12 @@ def test_local_approval_is_isolated_from_distribution_and_uses_reusable_policy(
         if not count:
             assert "画像参照" in text and SOURCE in text
         review = review_fixture(generation, staged["catalog_assets"] if count else [])
+        if profile == "distribution":
+            review["photo_review"].update(
+                coverage_adequate=False,
+                visual_coverage="constrained",
+                constraint="図版2点の許諾はローカル閲覧に限られる。",
+            )
         path = run / "qa" / f"test-{profile}.json"
         path.write_text(json.dumps(review))
         assert (
@@ -154,6 +160,11 @@ def test_local_approval_is_isolated_from_distribution_and_uses_reusable_policy(
         assert checked["status"] == "complete"
         assert checked["photos"]["work_visual_count"] == count
         assert checked["photos"]["rights_cleared_count"] == count
+        assert checked["photos"]["not_embeddable_count"] == 2 - count
+        assert checked["photos"]["rights_pending_count"] == 0
+        assert checked["photos"]["visual_coverage"] == (
+            "adequate" if profile == "local" else "constrained"
+        )
         assert checked["photos"]["formats"] == dict.fromkeys(
             ("pdf", "svg", "html"), count
         )

@@ -446,7 +446,7 @@ def validate_photo_review(review, coverage):
     )
     groups = candidate_groups(coverage["candidates"])
     unresolved = depicted_ids(coverage["candidates"], groups["unresolved"])
-    withheld = depicted_ids(coverage["candidates"], groups["rights_withheld"])
+    withheld = groups["rights_withheld"] | groups["profile_withheld"]
     usable_unadopted = depicted_ids(
         coverage["candidates"], groups["usable_unadopted"]
     )
@@ -577,6 +577,7 @@ def metrics(coverage, drawn_ids):
             candidates[key].get("rights") == "unknown" for key in groups["rights_withheld"]
         ),
         "not_embeddable_count": len(groups["access_blocked"])
+        + len(groups["profile_withheld"])
         + sum(
             candidates[key].get("rights") == "restricted"
             for key in groups["rights_withheld"]

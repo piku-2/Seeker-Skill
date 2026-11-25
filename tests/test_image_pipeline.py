@@ -212,14 +212,31 @@ def test_acquired_file_can_wait_and_later_embed_for_one_profile(tmp_path, capsys
     assert checked["photos"]["embedded_count"] == 1
     assert checked["photos"]["work_visual_count"] == 1
     assert checked["photos"]["rights_cleared_count"] == 1
+    assert checked["photos"]["not_embeddable_count"] == 0
+    assert checked["photos"]["visual_coverage"] == "adequate"
     assert checked["image_catalog"]["approved"] == {"distribution": 0, "local": 1}
     dist_review = review_fixture(read_progress(run)["active_generation"])
     dist_path = run / "qa" / "dist-review.json"
+    args = ["qa", str(run), "--image-profile", "distribution", "--review", str(dist_path)]
     dist_path.write_text(json.dumps(dist_review))
-    assert main(["qa", str(run), "--image-profile", "distribution", "--review", str(dist_path)]) == 0
+    main(args)
+    rejected = json.loads(capsys.readouterr().out)
+    assert rejected["status"] == "incomplete"
+    assert "withheld useful image is not full coverage" in rejected["photos"]["reason"]
+
+    dist_review["photo_review"].update(
+        coverage_adequate=False,
+        visual_coverage="constrained",
+        constraint="取得済みの画面は個人閲覧に限り許諾されている。",
+    )
+    dist_path.write_text(json.dumps(dist_review))
+    assert main(args) == 0
     distributed = json.loads(capsys.readouterr().out)
+    assert distributed["status"] == "complete"
     assert distributed["photos"]["embedded_count"] == 0
-    assert distributed["photos"]["visual_coverage"] == "adequate"
+    assert distributed["photos"]["not_embeddable_count"] == 1
+    assert distributed["photos"]["rights_pending_count"] == 0
+    assert distributed["photos"]["visual_coverage"] == "constrained"
     manifest = json.loads((run / "manifest.json").read_text())
     assert all("render-local" not in artifact for artifact in manifest["artifacts"])
 
