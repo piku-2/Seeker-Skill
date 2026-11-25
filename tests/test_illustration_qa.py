@@ -73,9 +73,16 @@ def search_fixture():
                 "depicted_node_ids": ["node_old"],
                 "provider": "架空のアーカイブ",
                 "identifier": "fixture-1",
-                "acquisition": "not_attempted",
+                "acquisition": "failed",
+                "attempts": [
+                    {
+                        "url": SOURCE + "/missing-file",
+                        "result": "提供ページに画像ファイルがない",
+                    }
+                ],
+                "alternatives_considered": "別名の資料番号でも取得できる画像はなかった",
                 "useful": True,
-                "rejection": "rights_unavailable",
+                "rejection": "acquisition_failed",
             }
         ],
         "zero_reason": "架空アーカイブで確認した画像の再配布条件が明記されていない",
@@ -238,6 +245,8 @@ def test_documented_zero_images_retains_review_statuses(tmp_path, independent, s
     scene = render_fixture(run, data, force_pdf_error=True)
     outcome = assess(run, data, scene, review_fixture(gen, independent=independent))
     assert outcome["status"] == status
+    assert outcome["photos"]["visual_coverage"] == "adequate"
+    assert outcome["photos"]["embedded_count"] == 0
     assert outcome["illustrations"]["status"] == "pass"
     assert outcome["illustrations"]["formats"] == {"svg": 0, "html": 0}
     assert outcome["illustrations"]["zero_reason"] == search["zero_reason"]

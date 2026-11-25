@@ -323,6 +323,16 @@ def catalog_summary(catalog):
             )
             for p in PROFILES
         },
+        "not_attempted": sum(i.get("acquisition") == "not_attempted" for i in items),
+        "failed": sum(i.get("acquisition") == "failed" for i in items),
+        "embedding_pending": sum(
+            i.get("acquisition") == "verified"
+            and not any(
+                verdict.get("decision") == "approved"
+                for verdict in i.get("uses", {}).values()
+            )
+            for i in items
+        ),
         "candidates": items,
     }
 

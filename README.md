@@ -78,9 +78,9 @@ uv run pytest -v -rs
 
 ### 写真・実物史料の探索と確認
 
-`photo-candidates <run>` で重要ノードと採用済みの代表対象を確認する。実画像の探索・取得・権利・採否を `illustrations-save` の `photo_plan` で記録し、`image-inspect <path>` で取得内容を点検できる。完了時は、実写真・実物史料の代表対象カバレッジと各出力への掲載を、生成図表とは別に確認する。[写真のデータ契約](references/data-contract.md#documentary-image-coverage)
+`photo-candidates <run>` で重要ノードと採用済みの代表対象を確認する。候補には人物写真、実物、画面、パッケージ、書影、公式ビジュアル、文書、図面、当時の広告、保存されたウェブページが含まれる。実画像の探索・取得・同定・権利・採否を `illustrations-save` の `photo_plan` で記録し、`image-inspect <path>` で取得内容を点検できる。権利が未確認でも、取得できるファイルはカタログに残す。取得と掲載可否は別の判断である。`rights_unavailable` は、取得済みでまだ掲載できない状態であり、取得前に探索を終える理由ではない。完了時は、実写真・実物史料の代表対象カバレッジと各出力への掲載を、生成図表とは別に確認する。有用な未取得候補を不採用理由だけで十分と判定しない。[写真のデータ契約](references/data-contract.md#documentary-image-coverage)
 
-作品パッケージ、書影、公式ビジュアル、ゲーム画面も対象に含める。`images-save` で取得後のファイルと候補をまとめて保存し、`images-stage` で確認済みの掲載可否に応じて登録する。`render --image-profile local` の個人閲覧用は標準の配布向けフォルダと分かれ、個別に確認した利用条件に従う。[画像収集と出力設定](references/data-contract.md#collecting-images-before-an-embedding-decision)
+作品パッケージ、書影、公式ビジュアル、ゲーム画面も対象に含める。年代や仕様の説明であることだけでは `not_suitable` にしない。`images-save` で取得後のファイルと候補をまとめて保存し、`images-status` で未取得・失敗・掲載待ちを確認し、`images-stage` で確認済みの掲載可否に応じて登録する。`render --image-profile local` の個人閲覧用は標準の配布向けフォルダと分かれ、個別に確認した利用条件に従う。[画像収集と出力設定](references/data-contract.md#collecting-images-before-an-embedding-decision)
 
 ### 動的配置・図表・代表例
 

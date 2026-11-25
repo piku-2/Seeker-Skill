@@ -1,6 +1,14 @@
-"""Trace documentary image opportunities, acquisitions and coverage."""
+"""Trace documentary image opportunities, acquisitions and coverage.
 
+Discovery, acquisition, identification, use assessment and embedding are separate.
+Unknown reuse terms withhold embedding. They do not discard a useful image or
+finish a search that never tried to collect the file.
+"""
+
+import hashlib
+import re
 from collections import Counter, defaultdict
+from pathlib import Path
 
 from .illustrations import _ids, _index, _text, _url, searchable_assets
 from .images import IMAGE_TYPES
@@ -21,6 +29,54 @@ VISUAL_NODE_TYPES = {
     "product",
 }
 STRATEGIES = {"institution", "catalog_id", "alternate_name", "image_search", "archive"}
+VISUAL_KINDS = {
+    "portrait",
+    "object_photo",
+    "screenshot",
+    "package",
+    "cover",
+    "key_visual",
+    "poster",
+    "document",
+    "manuscript",
+    "inscription",
+    "drawing",
+    "advertisement",
+    "archived_page",
+    "other",
+}
+VISUAL_KINDS_BY_TYPE = {
+    "person": ["portrait", "document", "archived_page"],
+    "product": [
+        "screenshot",
+        "package",
+        "cover",
+        "key_visual",
+        "poster",
+        "object_photo",
+        "advertisement",
+    ],
+    "technology": ["object_photo", "screenshot", "drawing", "document", "archived_page"],
+    "invention": ["object_photo", "drawing", "document", "advertisement"],
+    "object": ["object_photo", "document", "drawing"],
+    "document": ["document", "manuscript", "inscription", "cover"],
+    "event": ["object_photo", "poster", "document", "archived_page"],
+    "place": ["object_photo", "document", "archived_page"],
+    "organization": ["object_photo", "document", "archived_page", "advertisement"],
+}
+WORK_VISUALS = {"screenshot", "package", "cover", "key_visual"}
+REQUIRED_WORK_VISUALS = {
+    "product": WORK_VISUALS,
+    "technology": {"object_photo", "screenshot", "drawing"},
+    "document": {"document", "cover", "manuscript"},
+}
+ACCESS_BLOCKS = {"not_offered", "access_restricted"}
+WEAK_EXCLUSION = re.compile(
+    r"写真は不要|画像は不要|写真が不要|画像が不要|"
+    r"現物写真で差を判別|パッケージや宣材の外観|宣材の外観|"
+    r"単なる.{0,16}写真|別年代の.{0,16}写真だけ|"
+    r"仕様の説明だから|年代の話だから|年代だから画像"
+)
 
 
 def opportunities(data, representative_report):
@@ -38,6 +94,9 @@ def opportunities(data, representative_report):
             "aliases": node["aliases"],
             "type": node["type"],
             "representative_ids": sorted(reps[node["id"]]),
+            "visual_kinds": list(
+                VISUAL_KINDS_BY_TYPE.get(node["type"], ["document", "archived_page", "other"])
+            ),
         }
         for node in data["nodes"]
         if node["adoption_status"] == "adopted"
@@ -47,6 +106,16 @@ def opportunities(data, representative_report):
             or node["id"] in related
         )
     ]
+
+
+def weak_exclusion(reason):
+    return bool(WEAK_EXCLUSION.search(reason or ""))
+
+
+def _sha256(value):
+    return isinstance(value, str) and len(value) == 64 and all(
+        c in "0123456789abcdef" for c in value
+    )
 
 
 def documentary_assets(data):
@@ -93,6 +162,7 @@ def validate_photo_search(report, data, representative_report=None):
         required <= targets.keys() <= adopted,
         "photos: missing required target assessments",
     )
+    node_types = {node["id"]: node.get("type") for node in data["nodes"]}
     suitable = set()
     for key, target in targets.items():
         decision = target.get("decision")
@@ -104,6 +174,23 @@ def validate_photo_search(report, data, representative_report=None):
             and decision in ("search", "not_suitable"),
             f"photos: invalid target assessment {key}",
         )
+        if decision == "not_suitable":
+            kinds = target.get("visual_kinds_considered")
+            ensure(
+                isinstance(kinds, list)
+                and bool(kinds)
+                and set(kinds) <= VISUAL_KINDS,
+                f"photos: {key} must record the visual kinds that were considered",
+            )
+            ensure(
+                not weak_exclusion(target["reason"]),
+                f"photos: weak visual exclusion {key}",
+            )
+            required = REQUIRED_WORK_VISUALS.get(node_types.get(key))
+            ensure(
+                required is None or bool(set(kinds) & required),
+                f"photos: work visual not considered {key}",
+            )
         if decision == "search":
             ensure(
                 _text(target.get("value"))
@@ -205,6 +292,7 @@ def validate_photo_search(report, data, representative_report=None):
         if item["decision"] == "adopted":
             continue
         code = item.get("rejection")
+        acquisition = item.get("acquisition")
         replacement = item.get("replacement_asset_id")
         ids = set(item["depicted_node_ids"])
         ensure(
@@ -213,14 +301,36 @@ def validate_photo_search(report, data, representative_report=None):
             and _text(item.get("reason")),
             f"photos: unresolved candidate {key}",
         )
+        if (
+            code == "rights_unavailable"
+            and item["rights"] in ("unknown", "restricted")
+            and acquisition != "verified"
+        ):
+            ensure(
+                False,
+                f"photos: {key} rights_unavailable does not replace acquisition",
+            )
         ensure(
             (code == "unsuitable" and not item["useful"])
             or (
                 code == "rights_unavailable"
                 and item["rights"] in ("unknown", "restricted")
+                and acquisition == "verified"
+                and _sha256(item.get("sha256"))
+                and _text(item.get("local_path"))
             )
             or (code == "scope_unavailable" and item["rights"] == "restricted")
-            or (code == "acquisition_failed" and item["acquisition"] == "failed")
+            or (
+                code == "acquisition_failed"
+                and item["acquisition"] == "failed"
+                and _text(item.get("alternatives_considered"))
+            )
+            or (
+                code == "access_unavailable"
+                and acquisition == "not_attempted"
+                and item.get("acquisition_block") in ACCESS_BLOCKS
+                and _text(item.get("acquisition_block_note"))
+            )
             or (
                 code == "redundant"
                 and _text(replacement)
@@ -251,13 +361,124 @@ def validate_photo_search(report, data, representative_report=None):
     }
 
 
+def pipeline_state(item):
+    """Separate an unfinished useful image from a recorded acquisition or reuse limit."""
+    code = item.get("rejection")
+    acquisition = item.get("acquisition")
+    if item.get("decision") == "adopted":
+        return "embedded"
+    if item.get("useful") is False or code == "unsuitable":
+        return "closed"
+    if code == "redundant":
+        return "closed"
+    if code == "scope_unavailable" and item.get("rights") == "restricted":
+        return "profile_withheld"
+    if (
+        code == "access_unavailable"
+        and acquisition == "not_attempted"
+        and item.get("acquisition_block") in ACCESS_BLOCKS
+        and _text(item.get("acquisition_block_note"))
+    ):
+        return "access_blocked"
+    if (
+        code == "acquisition_failed"
+        and acquisition == "failed"
+        and item.get("attempts")
+        and _text(item.get("alternatives_considered"))
+    ):
+        return "acquisition_failed"
+    if (
+        code == "rights_unavailable"
+        and acquisition == "verified"
+        and item.get("rights") in ("unknown", "restricted")
+        and _sha256(item.get("sha256"))
+        and _text(item.get("local_path"))
+    ):
+        return "rights_withheld"
+    if (
+        item.get("useful")
+        and item.get("rights") in CLEARED_RIGHTS
+        and acquisition == "verified"
+    ):
+        return "usable_unadopted"
+    if item.get("useful"):
+        return "unresolved"
+    return "closed"
+
+
+def candidate_groups(candidates):
+    groups = defaultdict(set)
+    for key, item in candidates.items():
+        groups[pipeline_state(item)].add(key)
+    return groups
+
+
+def depicted_ids(candidates, keys):
+    nodes = set()
+    for key in keys:
+        nodes.update(candidates[key].get("depicted_node_ids") or [])
+    return nodes
+
+
+def verify_held_files(candidates, run_dir):
+    if run_dir is None:
+        return
+    run = Path(run_dir).resolve()
+    for key, item in candidates.items():
+        if item.get("acquisition") != "verified" or not item.get("local_path"):
+            continue
+        path = (run / item["local_path"]).resolve()
+        ensure(
+            path.is_relative_to(run) and path.is_file(),
+            f"photos: {key} acquired image is missing",
+        )
+        ensure(
+            _sha256(item.get("sha256"))
+            and hashlib.sha256(path.read_bytes()).hexdigest() == item["sha256"],
+            f"photos: {key} acquired image checksum differs",
+        )
+
+
 def validate_photo_review(review, coverage):
     ensure(
-        isinstance(review, dict)
-        and review.get("coverage_adequate") is True
-        and _text(review.get("findings")),
+        isinstance(review, dict) and _text(review.get("findings")),
         "photos: semantic coverage review missing",
     )
+    groups = candidate_groups(coverage["candidates"])
+    unresolved = depicted_ids(coverage["candidates"], groups["unresolved"])
+    withheld = depicted_ids(coverage["candidates"], groups["rights_withheld"])
+    usable_unadopted = depicted_ids(
+        coverage["candidates"], groups["usable_unadopted"]
+    )
+    for note in review.get("checks") or []:
+        if (
+            isinstance(note, dict)
+            and note.get("unresolved_useful_candidate") is False
+            and note.get("node_id") in unresolved
+        ):
+            ensure(
+                False,
+                "photos: unresolved useful candidate contradicts the review for "
+                + str(note.get("node_id")),
+            )
+    adequate = review.get("coverage_adequate")
+    if adequate is False:
+        ensure(
+            review.get("visual_coverage") == "constrained"
+            and _text(review.get("constraint"))
+            and not unresolved
+            and not usable_unadopted
+            and bool(withheld),
+            "photos: visual constraint requires a withheld useful image",
+        )
+        mode = "constrained"
+    else:
+        ensure(adequate is True, "photos: semantic coverage review missing")
+        ensure(
+            not unresolved and not withheld and not usable_unadopted,
+            "photos: withheld useful image is not full coverage",
+        )
+        mode = "adequate"
     notes = _index(review.get("checks"), "node_id")
     suitable = coverage["suitable"]
     uncovered = suitable - set().union(*coverage["assets"].values())
@@ -273,8 +494,15 @@ def validate_photo_review(review, coverage):
         and all(_text(reason) for reason in excluded.values()),
         "photos: review the reasons for excluding documentary targets",
     )
+    for key, reason in excluded.items():
+        ensure(not weak_exclusion(reason), f"photos: weak visual exclusion {key}")
     queries = {s["query"].strip().casefold() for s in coverage["searches"].values()}
     for key, note in notes.items():
+        if note.get("unresolved_useful_candidate") is False and key in unresolved:
+            ensure(
+                False,
+                f"photos: unresolved useful candidate contradicts the review for {key}",
+            )
         ensure(
             _text(note.get("finding"))
             and _text(note.get("query"))
@@ -285,6 +513,7 @@ def validate_photo_review(review, coverage):
             and note.get("unresolved_useful_candidate") is False,
             f"photos: additional review incomplete for {key}",
         )
+    return mode
 
 
 def metrics(coverage, drawn_ids):
@@ -295,6 +524,18 @@ def metrics(coverage, drawn_ids):
         if item["node_id"] in coverage["suitable"]:
             for rep in item["representative_ids"]:
                 reps[rep].add(item["node_id"])
+    candidates = coverage["candidates"]
+    groups = candidate_groups(candidates)
+    embedded = [
+        item
+        for item in candidates.values()
+        if item.get("decision") == "adopted" and item.get("asset_id") in shown
+    ]
+    excluded = {
+        key: target["reason"]
+        for key, target in coverage["targets"].items()
+        if target.get("decision") == "not_suitable"
+    }
     return {
         "assessed_targets": len(coverage["targets"]),
         "suitable_targets": len(coverage["suitable"]),
@@ -313,15 +554,50 @@ def metrics(coverage, drawn_ids):
         "depicted_representatives": sum(bool(v & depicted) for v in reps.values()),
         "search_count": len(coverage["searches"]),
         "blocked_search_count": coverage["blocked_search_count"],
-        "candidate_count": len(coverage["candidates"]),
-        "rights_cleared_count": sum(
-            c["rights"] in CLEARED_RIGHTS for c in coverage["candidates"].values()
+        "candidate_count": len(candidates),
+        "useful_candidate_count": sum(
+            item.get("useful") is True for item in candidates.values()
         ),
+        "acquisition_not_attempted_count": sum(
+            item.get("acquisition") == "not_attempted" for item in candidates.values()
+        ),
+        "acquisition_verified_count": sum(
+            item.get("acquisition") == "verified" for item in candidates.values()
+        ),
+        "acquisition_failed_count": sum(
+            item.get("acquisition") == "failed" for item in candidates.values()
+        ),
+        "identified_count": sum(
+            item.get("acquisition") == "verified"
+            and _text(item.get("provider"))
+            and _text(item.get("identifier"))
+            for item in candidates.values()
+        ),
+        "rights_pending_count": sum(
+            candidates[key].get("rights") == "unknown" for key in groups["rights_withheld"]
+        ),
+        "not_embeddable_count": len(groups["access_blocked"])
+        + sum(
+            candidates[key].get("rights") == "restricted"
+            for key in groups["rights_withheld"]
+        ),
+        "embedded_count": len(embedded),
+        "embedded_by_kind": dict(Counter(item.get("media_kind") for item in embedded)),
+        "candidates_by_kind": dict(
+            Counter(item.get("media_kind") for item in candidates.values())
+        ),
+        "rights_cleared_count": sum(
+            c["rights"] in CLEARED_RIGHTS for c in candidates.values()
+        ),
+        "not_suitable_count": len(excluded),
+        "weak_exclusion_count": sum(weak_exclusion(reason) for reason in excluded.values()),
+        "excluded_targets": excluded,
+        "unresolved_candidate_ids": sorted(groups["unresolved"]),
         "unillustrated_targets": sorted(coverage["suitable"] - depicted),
         "rejections": dict(
             Counter(
                 c["rejection"]
-                for c in coverage["candidates"].values()
+                for c in candidates.values()
                 if c["decision"] == "rejected"
             )
         ),

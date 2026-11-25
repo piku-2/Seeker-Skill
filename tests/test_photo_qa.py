@@ -188,7 +188,24 @@ def test_low_importance_artifact_and_representative_each_need_assessment():
 )
 def test_documentary_candidate_cannot_be_abandoned_without_evidence(patch, message):
     report = search_fixture()
-    report["candidates"][0].update(patch)
+    candidate = report["candidates"][0]
+    candidate.update(
+        acquisition="not_attempted",
+        rights="unknown",
+        useful=True,
+        rejection="rights_unavailable",
+        decision="rejected",
+    )
+    for field in (
+        "attempts",
+        "alternatives_considered",
+        "acquisition_block",
+        "acquisition_block_note",
+        "sha256",
+        "local_path",
+    ):
+        candidate.pop(field, None)
+    candidate.update(patch)
     with pytest.raises(ValidationError, match=message):
         validate_photo_search(report, sample(), representative_fixture())
 

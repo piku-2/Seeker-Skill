@@ -21,6 +21,7 @@ from .photos import (
     metrics,
     validate_photo_review,
     validate_photo_search,
+    verify_held_files,
 )
 from .render import check_saved_artifacts
 from .representatives import KIND, validate_representatives
@@ -181,7 +182,7 @@ def _figure_qa(data, review, progress, illustration):
     return {"status": "pass", "candidate_count": count}
 
 
-def _photo_qa(data, scene, review, progress, illustrations, representatives):
+def _photo_qa(data, scene, review, progress, illustrations, representatives, run_dir=None):
     nonvector = [a for a in scene.get("assets", []) if "bbox" in a]
     drawn = [a for a in nonvector if a["record"].get("asset_type") in DOCUMENTARY_TYPES]
     result = {
@@ -233,7 +234,10 @@ def _photo_qa(data, scene, review, progress, illustrations, representatives):
             len(fingerprints) == len(drawn),
             "photos: identical image payloads are registered twice",
         )
-        validate_photo_review(review.get("photo_review"), coverage)
+        verify_held_files(coverage["candidates"], run_dir)
+        result["visual_coverage"] = validate_photo_review(
+            review.get("photo_review"), coverage
+        )
     except ValidationError as exc:
         result["reason"] = str(exc)
     else:
@@ -290,7 +294,9 @@ def judge(data, scene, review, *, progress=None, run_dir=None):
     representatives = _representative_qa(data, review, progress)
     chronology = _chronology_qa(data, review)
     figures = _figure_qa(data, review, progress, illustrations)
-    photos = _photo_qa(data, scene, review, progress, illustrations, representatives)
+    photos = _photo_qa(
+        data, scene, review, progress, illustrations, representatives, run_dir
+    )
     unfinished_tasks = [
         {key: task[key] for key in ("task_id", "topic", "status")}
         for task in (progress or {}).get("tasks", [])
