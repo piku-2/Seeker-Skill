@@ -2,6 +2,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     import pytest
@@ -246,6 +247,73 @@ def test_repair_approval_and_rollback(tmp_path):
     result = apply(root, prop, approval=True)
     assert result["status"] == "failed" and result["rollback"] == "restored"
     assert target.read_text() == "user uncommitted change"
+
+
+
+def check_intervening_change(tmp_path, external_change, expected):
+    target = tmp_path / "file.txt"
+    other = tmp_path / "other.txt"
+    target.write_text("original")
+    other.write_text("other original")
+    script = (
+        "from pathlib import Path\ntarget = Path('file.txt')\n"
+        f"{external_change}\nraise SystemExit(1)"
+    )
+    prop = proposal(
+        tmp_path,
+        {"other.txt": "other proposed", "file.txt": "proposed"},
+        "test intervening change",
+        [[sys.executable, "-c", script]],
+    )
+
+    result = apply(tmp_path, prop, approval=True)
+
+    assert result["status"] == "failed"
+    assert result["rollback"] == "conflict"
+    assert result["rollback_conflicts"] == ["file.txt"]
+    assert (target.read_text() if target.exists() else None) == expected
+    assert other.read_text() == "other proposed"
+    assert (Path(result["backup"]) / "file.txt").read_text() == "original"
+    assert (Path(result["backup"]) / "other.txt").read_text() == "other original"
+
+
+def test_repair_rollback_preserves_intervening_deletion(tmp_path):
+    check_intervening_change(tmp_path, "target.unlink()", None)
+
+
+def test_repair_rollback_preserves_intervening_edit(tmp_path):
+    check_intervening_change(
+        tmp_path, "target.write_text('external edit')", "external edit"
+    )
+
+
+def test_repair_rollback_restores_only_replaced_targets(tmp_path):
+    import truth_seeker.repair as repair
+
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("first original")
+    second.write_text("second original")
+    prop = proposal(
+        tmp_path,
+        {"first.txt": "first proposed", "second.txt": "second proposed"},
+        "test partial application",
+    )
+    replace = repair.os.replace
+
+    def fail_on_second(source, destination):
+        if destination == second:
+            raise OSError("test replace failure")
+        return replace(source, destination)
+
+    with patch.object(repair.os, "replace", fail_on_second):
+        result = apply(tmp_path, prop, approval=True)
+
+    assert result["status"] == "failed"
+    assert result["rollback"] == "restored"
+    assert first.read_text() == "first original"
+    assert second.read_text() == "second original"
+    assert not list(tmp_path.glob("*.repair_tmp"))
 
 
 def test_repair_success_and_cas(tmp_path):

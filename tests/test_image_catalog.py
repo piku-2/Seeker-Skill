@@ -153,6 +153,7 @@ def test_local_approval_is_isolated_from_distribution_and_uses_reusable_policy(
         checked = json.loads(capsys.readouterr().out)
         assert checked["status"] == "complete"
         assert checked["photos"]["work_visual_count"] == count
+        assert checked["photos"]["rights_cleared_count"] == count
         assert checked["photos"]["formats"] == dict.fromkeys(
             ("pdf", "svg", "html"), count
         )

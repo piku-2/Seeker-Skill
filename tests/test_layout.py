@@ -550,9 +550,44 @@ def test_axis_label_uses_shared_calendar_text():
     labels = [line["text"] for line in scene["time_axis"]["labels"]]
     assert "1926.21年" not in labels
     assert "出来事 1926年3月16日" in labels
-    assert "1969.55年" in labels
+    assert "1969年" in labels
+    assert "1969.55年" not in labels
     assert "推定年代帯" in labels
     assert "紀元前101年" in labels
     assert "1950年" in labels
     anchors = dict(scene["time_axis"]["anchors"])
     assert anchors[1926.21] < anchors[1969] < anchors[1969.55]
+
+
+def test_axis_adds_calendar_year_to_month_only_label_and_keeps_fractional_positions():
+    data = sample()
+    december = add_node(data, "node_december", 1989.95)
+    december["dates"] = [
+        {"earliest": 1989.95, "latest": 1989.95, "label": "12月着手"}
+    ]
+    add_node(data, "node_bce", 0.5, dates=[])
+    add_node(data, "node_april", 1989.25, dates=[])
+
+    scene = layout(data)
+    ruler = scene["time_axis"]
+    labels = {
+        year: line["text"]
+        for (year, _), line in zip(ruler["anchors"], ruler["labels"])
+    }
+    assert labels[1989.95] == "1989年 12月着手"
+    assert labels[1989.25] == "1989年"
+    assert labels[0.5] == "紀元前1年"
+    assert ruler["labels"][-1]["text"] == "年代不明"
+    assert dict(ruler["anchors"])[1989.25] < dict(ruler["anchors"])[1989.95]
+    assert node(scene, "node_december")["date_label"] == "12月着手"
+
+    legacy = deepcopy(scene)
+    old_ruler = legacy["time_axis"]
+    legacy_labels = {0.5: "0.5年", 1989.25: "1989.25年", 1989.95: "12月着手"}
+    for (year, _), line in zip(old_ruler["anchors"], old_ruler["labels"]):
+        if year in legacy_labels:
+            line["text"] = legacy_labels[year]
+    with pytest.raises(LayoutError, match="axis labels"):
+        check_scene(legacy, data)
+    del old_ruler["calendar_year_labels"]
+    assert check_scene(legacy, data)["status"] == "pass"

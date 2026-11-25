@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import math
+import re
 from collections import defaultdict
 from copy import deepcopy
 from itertools import chain, pairwise
@@ -181,7 +182,7 @@ def _agreed_calendar_label(group):
     return None
 
 
-def _axis_labels(years, nodes, *, prefer_calendar=True):
+def _axis_labels(years, nodes, *, prefer_calendar=True, calendar_year_labels=True):
     by_year = defaultdict(list)
     for node in nodes:
         by_year[node["anchor_year"]].append(node)
@@ -189,13 +190,22 @@ def _axis_labels(years, nodes, *, prefer_calendar=True):
     for year in [*years, None]:
         group = by_year[year]
         modes = {node.get("display_date", {}).get("mode", "anchored") for node in group}
-        if year is None or "anchored" in modes:
-            agreed = (
-                _agreed_calendar_label(group)
-                if year is not None and prefer_calendar
-                else None
-            )
-            labels.append(agreed or date_text(year))
+        if year is None:
+            labels.append(date_text(year))
+        elif "anchored" in modes:
+            agreed = _agreed_calendar_label(group) if prefer_calendar else None
+            if calendar_year_labels:
+                calendar_year = date_text(math.floor(year))
+                # Keep explicit dates and historical periods, including century labels.
+                if agreed and not re.search(r"(?<![\d.])\d+(?:年|世紀)", agreed):
+                    numeric_label = date_text(year)
+                    if numeric_label in agreed:
+                        agreed = agreed.replace(numeric_label, calendar_year)
+                    else:
+                        agreed = f"{calendar_year} {agreed}"
+                labels.append(agreed or calendar_year)
+            else:
+                labels.append(agreed or date_text(year))
         elif "estimated" in modes:
             labels.append("推定年代帯")
         else:
@@ -937,6 +947,7 @@ def layout(
         "time_axis": {
             "monotonic": True,
             "calendar_labels": True,
+            "calendar_year_labels": True,
             "anchors": anchors,
             "unknown_y": y,
             "labels": markers,
@@ -1333,11 +1344,17 @@ def check_scene(scene, data=None):
         "chronology reversed",
     )
     actual_labels = [line["text"] for line in axis["labels"]]
-    expected_labels = _axis_labels(anchors, nodes.values())
+    expected_labels = _axis_labels(
+        anchors,
+        nodes.values(),
+        calendar_year_labels=axis.get("calendar_year_labels") is True,
+    )
     labels_match = actual_labels == expected_labels or (
         "calendar_labels" not in axis
         and actual_labels
-        == _axis_labels(anchors, nodes.values(), prefer_calendar=False)
+        == _axis_labels(
+            anchors, nodes.values(), prefer_calendar=False, calendar_year_labels=False
+        )
     )
     _require(
         set(anchors)

@@ -8,6 +8,7 @@ from .model import ensure
 from .representatives import subject_nodes
 
 DOCUMENTARY_TYPES = IMAGE_TYPES
+CLEARED_RIGHTS = {"cleared", "scoped"}
 VISUAL_NODE_TYPES = {
     "person",
     "technology",
@@ -151,7 +152,7 @@ def validate_photo_search(report, data, representative_report=None):
             acquisition in ("not_attempted", "failed", "verified"),
             f"photos: unresolved acquisition {key}",
         )
-        cleared = item["rights"] in ("cleared", "scoped")
+        cleared = item["rights"] in CLEARED_RIGHTS
         if cleared:
             ensure(
                 _url(item.get("rights_url"))
@@ -314,7 +315,7 @@ def metrics(coverage, drawn_ids):
         "blocked_search_count": coverage["blocked_search_count"],
         "candidate_count": len(coverage["candidates"]),
         "rights_cleared_count": sum(
-            c["rights"] == "cleared" for c in coverage["candidates"].values()
+            c["rights"] in CLEARED_RIGHTS for c in coverage["candidates"].values()
         ),
         "unillustrated_targets": sorted(coverage["suitable"] - depicted),
         "rejections": dict(

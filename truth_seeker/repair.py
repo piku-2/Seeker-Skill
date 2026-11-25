@@ -107,13 +107,22 @@ def apply(root, proposal_file, approval=False, timeout=120):
         "status": "failed",
         "backup": str(backups),
     }
+    applied = []
     try:
         for item in d["changes"]:
             p = safe_path(root, item["path"])
             p.parent.mkdir(parents=True, exist_ok=True)
             tmp = p.with_name(p.name + ".repair_tmp")
-            tmp.write_text(item["new_content"], encoding="utf-8")
-            os.replace(tmp, p)
+            # Exclusive creation keeps a pre-existing temporary file intact.
+            stream = tmp.open("x", encoding="utf-8")
+            try:
+                with stream:
+                    stream.write(item["new_content"])
+                os.replace(tmp, p)
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
+            applied.append((p, item))
         for argv in d["test_commands"]:
             if (
                 not isinstance(argv, list)
@@ -137,22 +146,44 @@ def apply(root, proposal_file, approval=False, timeout=120):
     except Exception as e:
         result["failure"] = str(e)
         result["rollback"] = "restored"
-        for item in d["changes"]:
-            p = safe_path(root, item["path"])
-            b = backups / item["path"]
-            # Do not overwrite an externally modified file if detected.
-            if p.exists() and hash_file(p) != item["after_sha256"]:
-                result["rollback"] = "conflict"
-                continue
-            if existed[item["path"]]:
-                p.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(b, p)
-            elif p.exists():
-                p.unlink()
+        conflicts = [
+            item["path"] for p, item in applied
+            if not _matches_applied_file(p, item["after_sha256"])
+        ]
+        if conflicts:
+            result["rollback"] = "conflict"
+            result["rollback_conflicts"] = conflicts
+        else:
+            for p, item in reversed(applied):
+                rel = item["path"]
+                if not _matches_applied_file(p, item["after_sha256"]):
+                    result["rollback"] = "conflict"
+                    result["rollback_conflicts"] = [rel]
+                    break
+                try:
+                    if existed[rel]:
+                        shutil.copy2(backups / rel, p)
+                    else:
+                        p.unlink()
+                except OSError as exc:
+                    result["rollback"] = "failed"
+                    result["rollback_failure"] = str(exc)
+                    break
     d["status"] = result["status"]
     atomic_json(proposal_file, d)
     atomic_json(backups / "result.json", result)
     return result
+
+
+def _matches_applied_file(path, expected_hash):
+    try:
+        return (
+            not path.is_symlink()
+            and path.is_file()
+            and hash_file(path) == expected_hash
+        )
+    except OSError:
+        return False
 
 
 SECRET_RE = re.compile(
