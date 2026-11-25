@@ -347,7 +347,7 @@ def _shelf_detours(
     return [walk for _, walk in sorted(candidates)]
 
 
-def route_edges(edges, positions, obstacles, columns, *, shelves=None):
+def _initial_routes(edges, positions, obstacles, columns, *, shelves=None):
     ports = _ports(edges, positions)
     search_boxes = {key: padded(box, CLEARANCE + 3) for key, box in obstacles.items()}
     clear = _obstacle_index(tuple(search_boxes.values()))
@@ -414,3 +414,82 @@ def route_edges(edges, positions, obstacles, columns, *, shelves=None):
                 edge_id=eid,
                 node_id=blocker,
             )
+
+
+def route_edges(edges, positions, obstacles, columns, *, shelves=None):
+    """Keep ports and shelves fixed while relaxing crowded paths."""
+    from .layout_quality import PathSample
+
+    routes = list(
+        _initial_routes(edges, positions, obstacles, columns, shelves=shelves)
+    )
+    samples = [PathSample(path) for _, _, _, path in routes]
+    right_limit = columns[-1] + 39
+    boxes = sorted(padded(box, CLEARANCE + 3) for box in obstacles.values())
+    clear = _obstacle_index(tuple(boxes))
+    empty_traffic = {}
+    # Strong routes are placed first and get first choice of an unobstructed corridor.
+    # The second pass can adapt weaker routes around them without changing ports.
+    for index in reversed(range(len(routes))):
+        edge, start, end, path = routes[index]
+        original = samples[index]
+        others = samples[:index] + samples[index + 1 :]
+        collisions = sum(original.crosses(other) for other in others)
+        if not collisions:
+            continue
+        a, b = path[0], path[-1]
+        step = max(LEAD, min(100, dist(a, b) * 0.4))
+        alternatives = [
+            [
+                a,
+                _extend(a, start["side"], step * f),
+                _extend(b, end["side"], step * g),
+                b,
+            ]
+            for f, g in (
+                (0.45, 0.75),
+                (0.75, 0.45),
+                (1.45, 0.65),
+                (0.65, 1.45),
+                (1.6, 1.6),
+            )
+        ]
+        margin = edge_obstacles(obstacles, edge["source_id"], edge["target_id"])
+        if shelves is not None and len(path) > 4:
+            lead_a, lead_b = (
+                _extend(a, start["side"], LEAD),
+                _extend(b, end["side"], LEAD),
+            )
+            walks = _shelf_detours(
+                lead_a,
+                lead_b,
+                shelves[edge["source_id"]],
+                shelves[edge["target_id"]],
+                columns,
+                boxes,
+                clear,
+                empty_traffic,
+            )
+            for walk in walks[:6]:
+                alternative, _ = _detour(a, b, walk, list(enumerate(boxes)), margin)
+                if alternative is not None:
+                    alternatives.append(alternative)
+        best_score = (collisions, original.length)
+        for alternative in alternatives:
+            hull = bounds(alternative)
+            if hull[0] < 0 or hull[1] < 0 or hull[2] > right_limit:
+                continue
+            candidate = PathSample(alternative)
+            if candidate.length > original.length * 1.13 + 15:
+                continue
+            score = (
+                sum(candidate.crosses(other) for other in others),
+                candidate.length,
+            )
+            if score[0] >= collisions or score >= best_score:
+                continue
+            if first_collision(alternative, margin) is None:
+                routes[index] = edge, start, end, alternative
+                samples[index] = candidate
+                best_score = score
+    yield from routes

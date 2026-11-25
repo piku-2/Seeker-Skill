@@ -1,6 +1,6 @@
 # Truth Seeker v1.2
 
-DeepResearchを使ってめっちゃ調べて巨大な一枚のPDFを生成するスキルです。
+根拠付きの歴史調査から、一枚の時系列PDFとインタラクティブなHTML知識地図を生成するスキルです。
 このスキルで作った資料は商用利用できません。
 
 ## クイックスタート
@@ -51,7 +51,33 @@ uv run pytest -v -rs
 - **検索テーマの全文**および**調査開始日時 (`created_at`) / 最終更新日時 (`updated_at`)** はフォルダ内の `manifest.json` に安全に保持されます。
 - 内部ID（`run_id`）は従来どおり独立して保持され、既存の `run_xxxxx` フォルダとの完全な後方互換性があります。
 
-`runs/<run_dir>/render/` に `scene.json`, `map.svg`, `map.html`, PDFが有効なら `map.pdf` を生成する。PDF出力に失敗した場合はSVGを正式代替とする。強制失敗テストには `render --force-pdf-error` を使う。
+正式成果物は一枚の `map.pdf` と Truth Seeker Explorer の `map.html` です。正式な代替形式として `map.svg` も生成します。配布用は `<run_dir>/render/`、確認済み画像を使う個人閲覧用は `<run_dir>/render-local/` に出力します。各形式は同じ `scene.json` を使い、PDFが利用できない場合は `render_result.json` に理由を記録します。
+
+### Explorerで読む
+
+`map.html` をブラウザーで直接開きます。左側の検索では名称・別名・説明・関連する用語が一致します。結果を選ぶとカードへ移動し、詳細、入力・出力関係、出典を確認できます。ホイールや拡大・縮小ボタン、ドラッグ、タッチのピンチで移動できます。絞り込みは複数条件を組み合わせられ、「表示条件を解除」で全採用対象と関係に戻ります。年代入力には紀元前を負の数で指定します。地図と検索はオフラインで動作し、外部出典を開くときはネット接続が必要です。
+
+### 進捗・部分再生成
+
+```bash
+python -m truth_seeker status <run_dir>
+python -m truth_seeker render <run_dir>
+python -m truth_seeker render <run_dir> --format layout
+python -m truth_seeker render <run_dir> --from-scene
+python -m truth_seeker render <run_dir> --format html
+python -m truth_seeker layout-metrics <run_dir>/render/scene.json
+```
+
+`status` の `summary` で実行中・再試行可能・保留のタスク、未解決事項、資料と図版の件数、出力別の最新QA、再開可能なgenerationを確認できます。
+
+`--format layout` は下書きを保存します。`--from-scene` は有効な下書きがあれば全形式へ反映します。`--format pdf|svg|html` は公開済みの同一シーンから選んだ形式だけを修復・再生成します。generation、画像プロファイル、画像、他の成果物の検証に失敗した場合は、通常の `render` で全形式を作り直します。画像の掲載状態を変更した後も通常の `render` を使います。古いrunも通常の `render` で再生成できます。
+
+ブラウザー回帰テストには開発環境の Playwright と Chromium を使います。引数に実際の `map.html` も追加できます。
+
+```bash
+PYTHONPATH=. python tests/test_explorer_v13.py /tmp/truth-seeker-browser
+node tests/explorer_browser.cjs /tmp/truth-seeker-browser/map-3.html /tmp/truth-seeker-browser/map-1200.html
+```
 
 ノードとエッジの重要度はそれぞれL1〜L4で指定でき、未指定時はL2になる。`nodes.jsonl` または `edges.jsonl` の各レコードに `importance` を記録するか、`render --importance <file.json>` でノードID・エッジIDをキーにしたJSONを渡す。CLIで指定したレコードは描画時に優先し、判断理由と出典をシーンに記録する。歴史的重要度は主題との関係、歴史的な影響、転換点や合流点としての役割に基づいて判断する。
 

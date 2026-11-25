@@ -7,7 +7,6 @@ from pathlib import Path
 
 from .model import LayoutError, ValidationError, load_generation, validate
 from .qa import judge
-from .render import emit, layout
 from .repair import RepairError, apply, inspect, staged_check
 from .scene import check_font_coverage
 from .store import (
@@ -117,12 +116,23 @@ def build_parser():
         "generation_dir",
         help="A complete staged generation dir containing all JSONL files",
     )
+    a = s.add_parser(
+        "layout-metrics",
+        help="Measure crossings, collisions and coverage of a saved scene",
+    )
+    a.add_argument("scene", type=Path)
     a = s.add_parser("render")
     a.add_argument("run")
     a.add_argument(
         "--image-profile", choices=("distribution", "local"), default="distribution"
     )
     a.add_argument("--force-pdf-error", action="store_true")
+    a.add_argument(
+        "--format", choices=("all", "layout", "html", "pdf", "svg"), default="all"
+    )
+    a.add_argument(
+        "--from-scene", action="store_true", help="Reuse a verified saved layout"
+    )
     a.add_argument(
         "--importance",
         type=Path,
@@ -166,7 +176,9 @@ def main(argv=None):
             report = json.loads(args.report.read_text(encoding="utf-8"))
             output(save_representatives(args.run, report, complete=args.complete))
         elif args.command == "status":
-            output(read_progress(args.run))
+            from .status import status
+
+            output(status(args.run))
         elif args.command == "resume":
             output(resume(args.run))
         elif args.command == "validate":
@@ -229,41 +241,28 @@ def main(argv=None):
             data = load_generation(args.generation_dir)
             gen = commit_generation(args.run, data)
             output({"generation": gen, "validation": validate(data)})
-        elif args.command == "render":
-            from .images import check_catalog_assets, read_catalog
+        elif args.command == "layout-metrics":
+            from .layout_quality import layout_metrics
 
-            progress = read_progress(args.run)
-            data = load_generation(
-                Path(args.run) / "snapshots" / progress["active_generation"]
-            )
-            check_catalog_assets(read_catalog(args.run), data)
+            output(layout_metrics(json.loads(args.scene.read_text(encoding="utf-8"))))
+        elif args.command == "render":
+            from .render_run import render_run
+
             importance = (
                 json.loads(args.importance.read_text(encoding="utf-8"))
                 if args.importance
                 else None
             )
-            scene = layout(
-                data,
-                progress["run_id"],
-                progress["query"],
-                importance,
-                run_dir=args.run,
-                image_profile=args.image_profile,
+            output(
+                render_run(
+                    args.run,
+                    args.image_profile,
+                    args.format,
+                    from_scene=args.from_scene,
+                    importance=importance,
+                    force_pdf_error=args.force_pdf_error,
+                )
             )
-            scene["graph_generation"] = progress["active_generation"]
-            directory = "render-local" if args.image_profile == "local" else "render"
-            result = emit(scene, Path(args.run) / directory, args.force_pdf_error)
-            artifacts = [
-                f"render/{f}"
-                for f in ("scene.json", "map.svg", "map.html", "map.pdf")
-                if (Path(args.run) / "render" / f).exists()
-            ]
-            if (
-                args.image_profile == "distribution"
-                and (Path(args.run) / "manifest.json").exists()
-            ):
-                update_manifest(args.run, artifacts=artifacts)
-            output(result)
         elif args.command == "qa":
             with progress_lock(args.run):
                 progress = read_progress(args.run)
@@ -308,6 +307,10 @@ def main(argv=None):
                     "photos": qa["photos"],
                     "note": "Review flags must be supported by actual agent evidence, not invented",
                 }
+                if "render_inputs" in scene and qa["illustrations"]["status"] == "pass":
+                    from .render import scene_fingerprint
+
+                    result["scene_sha256"] = scene_fingerprint(scene)
                 qa_dir = Path(args.run) / "qa"
                 if args.image_profile == "local":
                     qa_dir = qa_dir / generation / "local"

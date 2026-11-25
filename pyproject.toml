@@ -19,7 +19,7 @@ truth-seeker-tool = "truth_seeker.cli:main"
 include = ["truth_seeker*"]
 
 [tool.setuptools.package-data]
-truth_seeker = ["fonts/*.ttf", "fonts/*.txt"]
+truth_seeker = ["fonts/*.ttf", "fonts/*.txt", "explorer_ui/*.css", "explorer_ui/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

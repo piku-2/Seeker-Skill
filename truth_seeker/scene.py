@@ -364,6 +364,63 @@ def _evidence_ids(record, claims, edges=None):
         yield from claim["contradicting_evidence_ids"]
 
 
+def _date_claims(node, edges):
+    date = node["display_date"]
+    refs = [
+        cid
+        for assertion in node["dates"]
+        for cid in assertion.get("basis_claim_ids", [])
+    ]
+    if date["mode"] == "estimated":
+        refs.extend(date["basis_claim_ids"])
+    if date["mode"] == "sequence":
+        for edge_id in date["edge_ids"]:
+            refs.extend(edges[edge_id]["chronology"]["basis_claim_ids"])
+    return list(dict.fromkeys(refs))
+
+
+def _explorer_research(nodes, edges, claims, evidence):
+    claim_ids = {
+        cid
+        for record in chain(nodes.values(), edges.values())
+        for cid in record["claim_ids"]
+    }
+    for node in nodes.values():
+        claim_ids.update(_date_claims(node, edges))
+    evidence_ids = {
+        eid
+        for cid in claim_ids
+        for field in ("supporting_evidence_ids", "contradicting_evidence_ids")
+        for eid in claims[cid][field]
+    }
+    return {
+        "claims": [
+            {
+                key: claim[key]
+                for key in (
+                    "id",
+                    "statement",
+                    "assessment",
+                    "supporting_evidence_ids",
+                    "contradicting_evidence_ids",
+                )
+            }
+            for cid, claim in claims.items()
+            if cid in claim_ids
+        ],
+        "evidence": [
+            {
+                "id": eid,
+                "title": _shown(item, "title"),
+                "locator": _shown(item, "locator", ""),
+                "source_url": item.get("source_url"),
+            }
+            for eid, item in evidence.items()
+            if eid in evidence_ids
+        ],
+    }
+
+
 def _end(lines):
     return lines[-1]["bbox"][1] + lines[-1]["bbox"][3]
 
@@ -678,9 +735,12 @@ def layout(
             "anchor_year": year,
             "label": _shown(n, "label"),
             "summary": _shown(n, "summary"),
+            "aliases": list(n["aliases"]),
+            "original_label": n["label"],
             "date_placement": placement,
             "display_date": n["display_date"],
             "dates": n["dates"],
+            "date_claim_refs": _date_claims(n, edge_index),
             "type": n["type"],
             "color": color,
             "claim_refs": n["claim_ids"],
@@ -881,6 +941,11 @@ def layout(
                 "path": [list(point) for point in path],
                 "arrow": _arrow(end, style["width"]),
                 "label": edge.get("label", ""),
+                "direction_meaning": edge.get("direction_meaning", ""),
+                "source_numbers": sorted(
+                    {reference_numbers[eid] for eid in _evidence_ids(edge, claims)},
+                    key=int,
+                ),
                 "relation_type": edge["relation_type"],
                 "importance": weight,
                 "assessments": assessments,
@@ -940,6 +1005,9 @@ def layout(
         "run_id": run_id,
         "graph_generation": "active",
         "image_profile": image_profile,
+        "explorer_research": _explorer_research(
+            {node["id"]: node for node in nodes}, edge_index, claims, evidence
+        ),
         "title": title,
         "canvas_width": width,
         "canvas_height": max(cursor, gallery_cursor if by_owner[None] else cursor) + 45,
@@ -1014,6 +1082,14 @@ def _check_graph_content(scene, graph_nodes, graph_edges, data):
         )
     claims = {c["id"]: c for c in data.get("claims", [])}
     evidence = {e["id"]: e for e in data.get("evidence", [])}
+    explorer = "explorer_research" in scene
+    if explorer:
+        _require(
+            scene["explorer_research"]
+            == _explorer_research(graph_nodes, graph_edges, claims, evidence),
+            "explorer_data",
+            "Explorer claims or evidence differ from the adopted graph",
+        )
     used = {
         eid
         for record in chain(graph_nodes.values(), graph_edges.values())
@@ -1045,6 +1121,15 @@ def _check_graph_content(scene, graph_nodes, graph_edges, data):
         key = n["node_id"]
         record = graph_nodes[key]
         year = record["display_date"]
+        if explorer:
+            _require(
+                n.get("aliases") == record["aliases"]
+                and n.get("original_label") == record["label"]
+                and n.get("date_claim_refs") == _date_claims(record, graph_edges),
+                "explorer_data",
+                f"{key}: aliases or date references differ from graph",
+                node_id=key,
+            )
         _require(
             n["anchor_year"] == placements[key]["anchor_year"]
             and (
@@ -1087,6 +1172,18 @@ def _check_graph_content(scene, graph_nodes, graph_edges, data):
     for edge in scene["edges"]:
         key = edge["edge_id"]
         record = graph_edges[key]
+        if explorer:
+            _require(
+                edge.get("direction_meaning") == record["direction_meaning"]
+                and edge.get("source_numbers")
+                == sorted(
+                    {refs[eid]["number"] for eid in _evidence_ids(record, claims)},
+                    key=int,
+                ),
+                "explorer_data",
+                f"{key}: Explorer relation differs from graph",
+                edge_id=key,
+            )
         if flexible:
             _require(
                 edge["assessments"]

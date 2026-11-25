@@ -1,13 +1,17 @@
 """Render a common drawing scene as one-page PDF, standalone SVG and HTML."""
 
 import base64
+import hashlib
 import html
 import io
 import json
 import math
+import os
+import tempfile
 import xml.etree.ElementTree as ET
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
+from itertools import pairwise
 from pathlib import Path
 
 from .model import LayoutError
@@ -91,7 +95,7 @@ def render_svg(scene):
     for node in scene["nodes"]:
         if "anchor_leader" in node:
             parts.append(
-                f'<polyline points="{_svg_points(node["anchor_leader"])}" fill="none" stroke="{node["color"]}" stroke-dasharray="2,3"/>'
+                f'<polyline data-anchor-leader="{html.escape(node["node_id"])}" points="{_svg_points(node["anchor_leader"])}" fill="none" stroke="{node["color"]}" stroke-dasharray="2,3"/>'
             )
     for edge in scene["edges"]:
         style = edge["style"]
@@ -111,7 +115,7 @@ def render_svg(scene):
         x, y, ww, hh = node["bbox"]
         style = node["style"]
         parts.append(
-            f'<g data-node-id="{html.escape(node["node_id"])}" data-importance="{node["importance"]["level"]}">'
+            f'<g data-node-id="{html.escape(node["node_id"])}" id="n-{html.escape(node["node_id"])}" data-importance="{node["importance"]["level"]}">'
             f'<rect x="{x}" y="{y}" width="{ww}" height="{hh}" rx="9" fill="{style["fill"]}" '
             f'stroke="{style["stroke"]}" stroke-width="{style["width"]}"/>'
         )
@@ -156,22 +160,9 @@ def render_svg(scene):
 
 
 def render_html(scene, svg):
-    # The SVG remains the complete logical map; HTML provides an accessible full-ID lookup.
-    menu = "".join(
-        f'<li><a href="#n-{html.escape(n["node_id"])}" data-target="{html.escape(n["node_id"])}">{html.escape(n["label"])}</a></li>'
-        for n in scene["nodes"]
-    )
-    return (
-        """<!doctype html><html lang="ja"><meta charset="utf-8"><title>"""
-        + html.escape(scene["title"])
-        + """</title><style>body{margin:0;font-family:system-ui,sans-serif;background:#eee;color:#213245}header{position:sticky;top:0;background:white;padding:10px;z-index:2;border-bottom:1px solid #ddd}main{display:flex}aside{width:230px;overflow:auto;height:90vh;background:white}aside a{color:#325d92}article{flex:1;overflow:auto;height:90vh}svg{max-width:none}input{padding:8px}</style><header><b>"""
-        + html.escape(scene["title"])
-        + """</b>　<input id="search" placeholder="ノードを検索" aria-label="ノードを検索">　<span id="count"></span></header><main><aside><ul id="menu">"""
-        + menu
-        + """</ul></aside><article id="view">"""
-        + svg
-        + """</article></main><script>let nodes=[...document.querySelectorAll('[data-node-id]')],links=[...document.querySelectorAll('[data-target]')];document.getElementById('count').textContent=`${nodes.length} nodes`;document.getElementById('search').addEventListener('input',e=>{let s=e.target.value.toLowerCase();links.forEach(a=>a.parentElement.hidden=!a.textContent.toLowerCase().includes(s))});links.forEach(a=>a.addEventListener('click',e=>{e.preventDefault();let node=nodes.find(n=>n.getAttribute('data-node-id')===a.dataset.target);if(node){node.scrollIntoView({behavior:'smooth',block:'center',inline:'center'})}}));</script></html>"""
-    )
+    from .explorer import render
+
+    return render(scene, svg)
 
 
 def _link_areas(scene):
@@ -296,6 +287,9 @@ def render_pdf(scene, path):
 
 
 def _check_svg(scene, svg, html_document):
+    from .explorer import check_data
+
+    check_data(scene, html_document)
     root = ET.fromstring(svg)
     nodes = {
         group.get("data-node-id"): group
@@ -375,6 +369,53 @@ def _check_svg(scene, svg, html_document):
         )
 
 
+def _check_pdf_edges(drawings, edges, scale):
+    def same_points(actual, expected, operation):
+        return len(actual) == len(expected) and all(
+            item[0] == operation
+            and all(
+                abs(a - e * scale) < 0.03
+                for actual_point, expected_point in zip(item[1:], points, strict=True)
+                for a, e in zip(actual_point, expected_point, strict=True)
+            )
+            for item, points in zip(actual, expected)
+        )
+
+    curves = [
+        (index, drawing)
+        for index, drawing in enumerate(drawings)
+        if drawing["type"] == "s" and any(item[0] == "c" for item in drawing["items"])
+    ]
+    if len(curves) != len(edges):
+        raise ValueError("PDF edge count differs from scene")
+    for (index, drawing), edge in zip(curves, edges):
+        style = edge["style"]
+        stroke = tuple(bytes.fromhex(style["stroke"][1:]))
+        expected_dashes = [int(value) for value in style["dash"].split(",") if value]
+        dash_array = drawing["dashes"].split("[", 1)[1].split("]", 1)[0]
+        actual_dashes = [float(value) for value in dash_array.split()]
+        if (
+            not same_points(drawing["items"], list(cubics(edge["path"])), "c")
+            or tuple(round(value * 255) for value in drawing["color"]) != stroke
+            or abs(drawing["width"] - style["width"] * scale) >= 0.03
+            or len(actual_dashes) != len(expected_dashes)
+            or any(
+                abs(a - b * scale) >= 0.03
+                for a, b in zip(actual_dashes, expected_dashes)
+            )
+        ):
+            raise ValueError(
+                f"PDF edge geometry or style differs from scene for {edge['edge_id']}"
+            )
+        arrow = edge["arrow"]
+        polygon = drawings[index + 1]
+        closed = [*arrow, arrow[0]]
+        if polygon["type"] != "f" or not same_points(
+            polygon["items"], list(pairwise(closed)), "l"
+        ):
+            raise ValueError(f"PDF arrow differs from scene for {edge['edge_id']}")
+
+
 def _check_pdf(scene, output):
     if not output.is_file() or not output.read_bytes().startswith(b"%PDF"):
         raise ValueError("invalid PDF output")
@@ -418,9 +459,26 @@ def _check_pdf(scene, output):
         shapes = [
             shape for a in scene.get("assets", []) for shape in a.get("shapes", [])
         ]
+        drawings = page.get_drawings() if shapes or "explorer_research" in scene else []
+        if "explorer_research" in scene:
+            _check_pdf_edges(drawings, scene["edges"], scale)
+            cards = [drawing for drawing in drawings if drawing["type"] == "fs"]
+            if len(cards) != len(scene["nodes"]):
+                raise ValueError("PDF card count differs from scene")
+            for card, node in zip(cards, scene["nodes"]):
+                style = node["style"]
+                if (
+                    not close_rect(card["rect"], page_rect(node["bbox"]))
+                    or abs(card["width"] - style["width"] * scale) >= 0.03
+                    or tuple(round(value * 255) for value in card["color"])
+                    != tuple(bytes.fromhex(style["stroke"][1:]))
+                ):
+                    raise ValueError(
+                        f"PDF card geometry or style differs from scene for {node['node_id']}"
+                    )
         if shapes:
             rectangles = defaultdict(list)
-            for drawing in page.get_drawings():
+            for drawing in drawings:
                 if drawing["fill"] is not None:
                     color = tuple(round(value * 255) for value in drawing["fill"])
                     rectangles[color].extend(
@@ -463,12 +521,52 @@ def _check_pdf(scene, output):
     return "page_and_text"
 
 
+def fingerprint(path):
+    with Path(path).open("rb") as stream:
+        digest = hashlib.sha256()
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+        return digest.hexdigest()
+
+
+def scene_fingerprint(scene):
+    return hashlib.sha256(
+        json.dumps(scene, ensure_ascii=False, indent=2).encode()
+    ).hexdigest()
+
+
+def _check_bundle(scene, out_dir, result):
+    if "scene_sha256" in result:
+        if (
+            result["scene_sha256"] != scene_fingerprint(scene)
+            or fingerprint(out_dir / "scene.json") != result["scene_sha256"]
+        ):
+            raise ValueError("saved scene fingerprint differs from render result")
+        if result.get("generation") != scene.get("graph_generation") or result.get(
+            "image_profile"
+        ) != scene.get("image_profile", "distribution"):
+            raise ValueError(
+                "render result belongs to a different generation or image profile"
+            )
+        recorded = result["artifact_sha256"]
+        present = {
+            f"map.{fmt}"
+            for fmt in ("pdf", "svg", "html")
+            if (out_dir / f"map.{fmt}").is_file()
+        }
+        if set(recorded) != present or any(
+            fingerprint(out_dir / name) != sha for name, sha in recorded.items()
+        ):
+            raise ValueError("saved artifact fingerprint differs from render result")
+
+
 def check_saved_artifacts(scene, out_dir):
     """Check files on disk against the current, already-validated scene."""
     out_dir = Path(out_dir)
     result = json.loads((out_dir / "render_result.json").read_text(encoding="utf-8"))
     if not isinstance(result, dict):
-        raise ValueError("invalid render result")
+        raise ValueError("invalid render result")  # noqa: TRY004 - invalid saved JSON value
+    _check_bundle(scene, out_dir, result)
     _check_svg(
         scene,
         (out_dir / "map.svg").read_text(encoding="utf-8"),
@@ -490,7 +588,7 @@ def check_saved_artifacts(scene, out_dir):
     return {name: count for name in formats}
 
 
-def emit(scene, out_dir, force_pdf_error=False):
+def _build_outputs(scene, out_dir, force_pdf_error=False):
     scene_check = check_scene(scene)
     svg = render_svg(scene)
     html_document = render_html(scene, svg)
@@ -551,7 +649,145 @@ def emit(scene, out_dir, force_pdf_error=False):
         "pdf_min_text_pt": minimum,
         "pdf_warning": warning,
     }
-    (out_dir / "render_result.json").write_text(
+    return result
+
+
+def _write_result(scene, result, staging, destination, names):
+    result.update(
+        generation=scene.get("graph_generation"),
+        image_profile=scene.get("image_profile", "distribution"),
+        scene_sha256=scene_fingerprint(scene),
+        artifact_sha256={
+            name: fingerprint(
+                (staging if (staging / name).is_file() else destination) / name
+            )
+            for name in names
+        },
+        primary_path=str(destination / f"map.{result['primary_format']}"),
+        svg_path=str(destination / "map.svg"),
+        html_path=str(destination / "map.html"),
+        formal_formats=[fmt for fmt in ("pdf", "html", "svg") if f"map.{fmt}" in names],
+    )
+    (staging / "render_result.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def _publish(staging, destination, names):
+    # Put the receipt last. If an ordinary I/O error interrupts publication,
+    # restore the previous bundle with links to its original files.
+    backup = staging / "previous"
+    backup.mkdir()
+    replaced = []
+    try:
+        for name in names:
+            old = destination / name
+            if old.is_file():
+                os.link(old, backup / name)
+            os.replace(staging / name, old)
+            replaced.append(name)
+    except OSError:
+        for name in reversed(replaced):
+            original = backup / name
+            if original.is_file():
+                os.replace(original, destination / name)
+            else:
+                (destination / name).unlink(missing_ok=True)
+        raise
+
+
+def emit(scene, out_dir, force_pdf_error=False):
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=out_dir) as temporary:
+        staging = Path(temporary)
+        result = _build_outputs(scene, staging, force_pdf_error)
+        if (out_dir / "map.pdf").is_file() and not (staging / "map.pdf").is_file():
+            try:
+                previous = json.loads(
+                    (out_dir / "render_result.json").read_text(encoding="utf-8")
+                )
+                if previous.get("scene_sha256") != scene_fingerprint(scene) or previous[
+                    "artifact_sha256"
+                ].get("map.pdf") != fingerprint(out_dir / "map.pdf"):
+                    raise ValueError(
+                        "previous PDF is from a different scene or has changed"
+                    )
+                result["pdf_check"] = _check_pdf(scene, out_dir / "map.pdf")
+            except (ValueError, OSError, RuntimeError, KeyError) as exc:
+                raise LayoutError(
+                    "pdf_render",
+                    "PDF generation failed; existing bundle preserved",
+                    reason=result["pdf_fallback_reason"],
+                    previous=str(out_dir),
+                    resume="retry render or inspect the existing bundle",
+                ) from exc
+            result["pdf_render_error"] = result["pdf_fallback_reason"]
+            result["primary_format"] = "pdf" if not result["pdf_warning"] else "svg"
+            if result["primary_format"] == "pdf":
+                result["pdf_fallback_reason"] = None
+            result["preserved_pdf"] = True
+        names = ["map.svg", "map.html"]
+        if (staging / "map.pdf").is_file() or result.get("preserved_pdf"):
+            names.append("map.pdf")
+        _write_result(scene, result, staging, out_dir, names)
+        _publish(
+            staging,
+            out_dir,
+            ["scene.json"]
+            + [n for n in names if (staging / n).exists()]
+            + ["render_result.json"],
+        )
+    return result
+
+
+def emit_one(scene, out_dir, fmt, *, force_pdf_error=False):
+    """Replace a single artifact from the already published, verified scene."""
+    out_dir = Path(out_dir)
+    result = json.loads((out_dir / "render_result.json").read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory(dir=out_dir) as temporary:
+        staging = Path(temporary)
+        name = f"map.{fmt}"
+        target = staging / name
+        try:
+            if fmt == "pdf":
+                if force_pdf_error:
+                    raise ValueError("injected PDF failure")
+                render_pdf(scene, target)
+                result["pdf_check"] = _check_pdf(scene, target)
+                if result.get("pdf_warning"):
+                    result["primary_format"] = "svg"
+                    result["pdf_fallback_reason"] = result["pdf_warning"]
+                else:
+                    result["primary_format"] = "pdf"
+                    result["pdf_fallback_reason"] = None
+            else:
+                previous_svg = (
+                    (out_dir / "map.svg").read_text(encoding="utf-8")
+                    if fmt == "html"
+                    else render_svg(scene)
+                )
+                document = (
+                    render_html(scene, previous_svg)
+                    if fmt == "html"
+                    else (out_dir / "map.html").read_text(encoding="utf-8")
+                )
+                _check_svg(scene, previous_svg, document)
+                target.write_text(
+                    document if fmt == "html" else previous_svg, encoding="utf-8"
+                )
+        except (ValueError, OSError, RuntimeError) as exc:
+            raise LayoutError(
+                f"{fmt}_render",
+                "single-format regeneration failed; existing artifacts preserved",
+                reason=str(exc),
+                previous=str(out_dir),
+                resume="retry the same format or render all formats",
+            ) from exc
+        names = set(result["artifact_sha256"]) | {name}
+        if fmt == "pdf":
+            result.pop("preserved_pdf", None)
+            result.pop("pdf_render_error", None)
+        _write_result(scene, result, staging, out_dir, sorted(names))
+        _publish(staging, out_dir, [name, "render_result.json"])
     return result

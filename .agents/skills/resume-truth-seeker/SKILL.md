@@ -11,7 +11,7 @@ description: Resume an interrupted Truth Seeker investigation from an existing r
 中断時の `progress.json`、タスク状態、成功済みgenerationを再利用し、完了済みタスクを再調査しない。
 レートリミットや外部制約が解消していない間は、進捗を保持したまま安全に中断する。
 
-調査を完走した場合のみ、通常の `/truth-seeker` と同じ品質検証・レンダー・PDF生成まで実施する。
+調査を完走した場合のみ、通常の `/truth-seeker` と同じ品質検証とレンダーを行い、一枚のPDFとExplorer HTMLを正式成果物として扱う。
 調査内容を推測で補完せず、実際に確認できた事実、出典、検査だけを完了扱いにする。
 
 ## Working location
@@ -42,6 +42,7 @@ description: Resume an interrupted Truth Seeker investigation from an existing r
 対象を決めたら、必ず既存のCLI再開処理を実行する:
 
 ```bash
+python -m truth_seeker status <run_dir>
 python -m truth_seeker resume <run_dir>
 ```
 
@@ -101,7 +102,7 @@ mergeは既存runの新しいgenerationとして保存する。
 通常の `/truth-seeker` と同じ手順で、以下を実施する:
 
 1. `python -m truth_seeker render <run_dir>`
-2. `render/scene.json`、`render/render_result.json`、SVG、HTML、利用可能ならPDFを検査する。
+2. `render/scene.json`、`render/render_result.json`、一枚のPDF、Explorer HTML、SVGを検査する。画像プロファイルに対応する成果物とQAを照合する。描画だけを修復する場合は README の部分再生成手順を使う。
 3. 全採用ノードと採用エッジ、時系列、未知日、異説表示、`ID` の安定性を確認する。
 4. メインエージェントによる資料・意味・視覚レビューを実施する。
 5. 利用可能なら独立レビュアーによる高リスクな因果・異説レビューを実施する。
