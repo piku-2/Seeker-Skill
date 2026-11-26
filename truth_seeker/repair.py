@@ -16,6 +16,38 @@ class RepairError(Exception):
     pass
 
 
+TEST_COMMAND_PREFIXES = (
+    ("python", "-m", "pytest"),
+    ("python3", "-m", "pytest"),
+    ("uv", "run", "pytest"),
+    ("uv", "run", "python", "-m", "pytest"),
+    ("uv", "run", "python3", "-m", "pytest"),
+)
+
+BANNED_PREFIXES = (
+    "runs/",
+    "outputs/",
+    "artifacts/",
+    "cache/",
+    "assets/downloaded/",
+    "data/runs/",
+    "data/checkpoints/",
+    "data/staging/",
+    "experience/local/",
+    "repair_backups/",
+)
+
+SECRET_RE = re.compile(
+    r"(?:"
+    r"(?i:(?:api[_-]?key|secret|password|token)\s*[=:]\s*\S+)"
+    r"|[A-Z][A-Z0-9_]*(?:SECRET|PASSWORD|TOKEN)[A-Z0-9_]*\s*[=:]\s*\S+"
+    r"|[A-Z][A-Z0-9_]*_KEY\s*[=:]\s*\S+"
+    r"|sk-[A-Za-z0-9_-]{16,}"
+    r"|-----BEGIN (?:RSA |EC |OPENSSH |OPEN )?PRIVATE KEY-----"
+    r")"
+)
+
+
 def hash_file(p):
     return (
         hashlib.sha256(Path(p).read_bytes()).hexdigest() if Path(p).exists() else None
@@ -30,6 +62,23 @@ def safe_path(root, relative):
     if ".git" in p.relative_to(root).parts:
         raise RepairError("cannot modify .git")
     return p
+
+
+def check_test_command(argv):
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or any(not isinstance(x, str) for x in argv)
+    ):
+        raise RepairError("test command must be argv array")
+    if any("\x00" in x or "\n" in x or "\r" in x for x in argv):
+        raise RepairError("test command arguments cannot contain control characters")
+    for prefix in TEST_COMMAND_PREFIXES:
+        if len(argv) >= len(prefix) and tuple(argv[: len(prefix)]) == prefix:
+            return
+    raise RepairError(
+        "test command must be python -m pytest or uv run pytest, with pytest arguments only"
+    )
 
 
 def proposal(root, changes, reason, tests=None):
@@ -49,6 +98,8 @@ def proposal(root, changes, reason, tests=None):
                 "new_content": new,
             }
         )
+    for argv in tests or []:
+        check_test_command(argv)
     rid = "repair_" + uuid4().hex[:12]
     record = {
         "repair_id": rid,
@@ -75,18 +126,20 @@ def inspect(root, proposal_file):
     }
 
 
-def apply(root, proposal_file, approval=False, timeout=120):
-    if not approval:
-        raise RepairError("Explicit user approval required")
+def apply(root, proposal_file, approval=None, timeout=120):
     root = Path(root).resolve()
     proposal_file = Path(proposal_file)
     d = json.loads(proposal_file.read_text(encoding="utf-8"))
+    if approval != d.get("repair_id"):
+        raise RepairError("Explicit user approval of this repair_id is required")
     if d["status"] != "proposed":
         raise RepairError("Proposal already used")
     for item in d["changes"]:
         p = safe_path(root, item["path"])
         if hash_file(p) != item["before_sha256"]:
             raise RepairError("Changed since proposal: " + item["path"])
+    for argv in d["test_commands"]:
+        check_test_command(argv)
     backups = root / "repair_backups" / d["repair_id"]
     backups.mkdir(parents=True, exist_ok=False)
     existed = {}
@@ -124,12 +177,6 @@ def apply(root, proposal_file, approval=False, timeout=120):
                 raise
             applied.append((p, item))
         for argv in d["test_commands"]:
-            if (
-                not isinstance(argv, list)
-                or not argv
-                or any(not isinstance(x, str) for x in argv)
-            ):
-                raise RepairError("test command must be argv array")
             process = subprocess.run(
                 argv, cwd=root, capture_output=True, text=True, timeout=timeout
             )
@@ -147,7 +194,8 @@ def apply(root, proposal_file, approval=False, timeout=120):
         result["failure"] = str(e)
         result["rollback"] = "restored"
         conflicts = [
-            item["path"] for p, item in applied
+            item["path"]
+            for p, item in applied
             if not _matches_applied_file(p, item["after_sha256"])
         ]
         if conflicts:
@@ -186,9 +234,26 @@ def _matches_applied_file(path, expected_hash):
         return False
 
 
-SECRET_RE = re.compile(
-    r"(?i)(api[_-]?key|secret|password|token)\s*[=:]\s*[^\s]+|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"
-)
+def _posix_rel(rel):
+    posix = rel.replace("\\", "/")
+    while posix.startswith("./"):
+        posix = posix[2:]
+    return posix.lstrip("/")
+
+
+def ignored_runtime_path(rel):
+    posix = _posix_rel(rel)
+    name = Path(posix).name
+    if name == ".env" or (name.startswith(".env.") and name != ".env.example"):
+        return True
+    parts = Path(posix).parts
+    if ".venv" in parts or "__pycache__" in parts or ".pytest_cache" in parts:
+        return True
+    if any(part.endswith(".egg-info") for part in parts):
+        return True
+    if Path(posix).suffix.lower() in {".pyc", ".pyo", ".pyd"}:
+        return True
+    return any(posix == prefix.rstrip("/") or posix.startswith(prefix) for prefix in BANNED_PREFIXES)
 
 
 def staged_check(root):
@@ -199,22 +264,17 @@ def staged_check(root):
     if cmd.returncode:
         raise RepairError("git staging unavailable")
     paths = [x.decode("utf-8", errors="replace") for x in cmd.stdout.split(b"\0") if x]
-    banned = (
-        "/runs/",
-        "/outputs/",
-        "/artifacts/",
-        "/experience/local/",
-        "/repair_backups/",
-        "/cache/",
-        "/assets/downloaded/",
-    )
     problems = []
     for rel in paths:
-        if any("/" + rel.startswith(b[1:]) for b in []):
-            pass
-        if any(("/" + rel).startswith(b) for b in banned) or Path(
-            rel
-        ).suffix.lower() in (".pdf", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".html"):
+        if ignored_runtime_path(rel) or Path(rel).suffix.lower() in (
+            ".pdf",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".svg",
+            ".html",
+        ):
             problems.append(f"generated/private file staged: {rel}")
         blob = subprocess.run(["git", "show", ":" + rel], cwd=root, capture_output=True)
         if blob.returncode == 0:

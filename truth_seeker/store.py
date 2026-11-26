@@ -384,10 +384,22 @@ def add_task(base, topic, priority=0, parent_task_id=None):
     base = Path(base)
     with progress_lock(base):
         pr = read_progress(base)
-        if any(
-            t["topic"] == topic and t["status"] != "superseded" for t in pr["tasks"]
-        ):
-            return False
+        existing = next(
+            (
+                t
+                for t in pr["tasks"]
+                if t["topic"] == topic and t["status"] != "superseded"
+            ),
+            None,
+        )
+        if existing:
+            return {
+                "added": False,
+                "reason": "A non-superseded task with this topic already exists",
+                "topic": topic,
+                "task_id": existing["task_id"],
+                "status": existing["status"],
+            }
         task = _new_task(pr, topic, priority, parent_task_id)
         atomic_json(base / "progress.json", pr)
         if (base / "manifest.json").exists():

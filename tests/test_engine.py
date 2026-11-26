@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -231,23 +232,68 @@ def test_atomic_generation_invalid_data(tmp_path):
     assert read_progress(base)["active_generation"] == "g000000"
 
 
+def _proposal_id(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))["repair_id"]
+
+
+def _pytest_cmd(*body, name="test_repair_probe.py"):
+    return ["python", "-m", "pytest", name, "-q"], name, "\n".join(body) + "\n"
+
+
 def test_repair_approval_and_rollback(tmp_path):
     root = tmp_path
     target = root / "file.txt"
     target.write_text("user uncommitted change")
+    argv, name, source = _pytest_cmd("def test_fail():\n    assert False")
+    (root / name).write_text(source)
     prop = proposal(
         root,
         {"file.txt": "changed by agent"},
         "test rollback",
-        [["python", "-c", "import sys;sys.exit(1)"]],
+        [argv],
     )
-    with pytest.raises(RepairError):
-        apply(root, prop, approval=False)
+    with pytest.raises(RepairError, match="repair_id"):
+        apply(root, prop)
+    with pytest.raises(RepairError, match="repair_id"):
+        apply(root, prop, approval=True)
+    with pytest.raises(RepairError, match="repair_id"):
+        apply(root, prop, approval="repair_nottherightone")
     assert target.read_text() == "user uncommitted change"
-    result = apply(root, prop, approval=True)
+    result = apply(root, prop, approval=_proposal_id(prop))
     assert result["status"] == "failed" and result["rollback"] == "restored"
     assert target.read_text() == "user uncommitted change"
 
+
+def test_repair_rejects_unallowlisted_test_command(tmp_path):
+    target = tmp_path / "file.txt"
+    target.write_text("original")
+    with pytest.raises(RepairError, match="pytest"):
+        proposal(
+            tmp_path,
+            {"file.txt": "changed"},
+            "bad command",
+            [["python", "-c", "raise SystemExit(1)"]],
+        )
+    argv, name, source = _pytest_cmd("def test_ok():\n    assert True")
+    (tmp_path / name).write_text(source)
+    prop = proposal(tmp_path, {"file.txt": "changed"}, "tampered command", [argv])
+    payload = json.loads(prop.read_text(encoding="utf-8"))
+    payload["test_commands"] = [["python", "-c", "raise SystemExit(1)"]]
+    prop.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RepairError, match="pytest"):
+        apply(tmp_path, prop, approval=payload["repair_id"])
+    assert target.read_text() == "original"
+
+
+def test_repair_applies_after_matching_repair_id(tmp_path):
+    target = tmp_path / "file.txt"
+    target.write_text("orig")
+    argv, name, source = _pytest_cmd("def test_ok():\n    assert True")
+    (tmp_path / name).write_text(source)
+    prop = proposal(tmp_path, {"file.txt": "new"}, "ok", [argv])
+    result = apply(tmp_path, prop, approval=_proposal_id(prop))
+    assert result["status"] == "passed"
+    assert target.read_text() == "new"
 
 
 def check_intervening_change(tmp_path, external_change, expected):
@@ -255,18 +301,22 @@ def check_intervening_change(tmp_path, external_change, expected):
     other = tmp_path / "other.txt"
     target.write_text("original")
     other.write_text("other original")
-    script = (
-        "from pathlib import Path\ntarget = Path('file.txt')\n"
-        f"{external_change}\nraise SystemExit(1)"
+    argv, name, source = _pytest_cmd(
+        "from pathlib import Path",
+        "def test_probe():",
+        "    target = Path('file.txt')",
+        f"    {external_change}",
+        "    assert False",
     )
+    (tmp_path / name).write_text(source)
     prop = proposal(
         tmp_path,
         {"other.txt": "other proposed", "file.txt": "proposed"},
         "test intervening change",
-        [[sys.executable, "-c", script]],
+        [argv],
     )
 
-    result = apply(tmp_path, prop, approval=True)
+    result = apply(tmp_path, prop, approval=_proposal_id(prop))
 
     assert result["status"] == "failed"
     assert result["rollback"] == "conflict"
@@ -307,7 +357,7 @@ def test_repair_rollback_restores_only_replaced_targets(tmp_path):
         return replace(source, destination)
 
     with patch.object(repair.os, "replace", fail_on_second):
-        result = apply(tmp_path, prop, approval=True)
+        result = apply(tmp_path, prop, approval=_proposal_id(prop))
 
     assert result["status"] == "failed"
     assert result["rollback"] == "restored"
@@ -319,12 +369,14 @@ def test_repair_rollback_restores_only_replaced_targets(tmp_path):
 def test_repair_success_and_cas(tmp_path):
     target = tmp_path / "file.txt"
     target.write_text("orig")
+    argv, name, source = _pytest_cmd("def test_ok():\n    assert True")
+    (tmp_path / name).write_text(source)
     p = proposal(
-        tmp_path, {"file.txt": "new"}, "test", [["python", "-c", 'print("passed")']]
+        tmp_path, {"file.txt": "new"}, "test", [argv]
     )
     target.write_text("unexpected modification")
     with pytest.raises(RepairError):
-        apply(tmp_path, p, approval=True)
+        apply(tmp_path, p, approval=_proposal_id(p))
     assert target.read_text() == "unexpected modification"
 
 
@@ -371,15 +423,57 @@ def test_render_same_year_dense_no_overlap():
     assert check_scene(s)["status"] == "pass"
 
 
+def _stage(repo, rel, content):
+    path = repo / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    subprocess.run(["git", "add", "-f", rel], cwd=repo, check=True)
+
+
 def test_git_protection(tmp_path):
     from truth_seeker.repair import staged_check
 
     repo = tmp_path
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     (repo / "secret.txt").write_text("api_key=very_secret_value")
     subprocess.run(["git", "add", "secret.txt"], cwd=repo, check=True)
     result = staged_check(repo)
     assert not result["safe"] and "secret.txt" in str(result["problems"])
+
+
+def test_git_check_covers_ignore_rules_and_secret_shapes(tmp_path):
+    from truth_seeker.repair import staged_check
+
+    repo = tmp_path
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    _stage(repo, "data/runs/notes.txt", "research notes")
+    _stage(repo, ".env", "VISIBLE=1")
+    _stage(repo, ".env.local", "VISIBLE=1")
+    result = staged_check(repo)
+    problems = " ".join(result["problems"])
+    assert "data/runs/notes.txt" in problems
+    assert ".env" in problems and ".env.local" in problems
+    # Reset the index between cases so problem lists stay specific.
+    subprocess.run(["git", "reset", "-q"], cwd=repo, check=True)
+    _stage(repo, ".env.example", "DEBUG=1")
+    result = staged_check(repo)
+    assert all("generated/private file staged: .env.example" not in p for p in result["problems"])
+    subprocess.run(["git", "reset", "-q"], cwd=repo, check=True)
+    _stage(repo, "keys.txt", "AWS_SECRET_ACCESS_KEY=abcd")
+    result = staged_check(repo)
+    assert not result["safe"] and "keys.txt" in str(result["problems"])
+    subprocess.run(["git", "reset", "-q"], cwd=repo, check=True)
+    _stage(repo, "openai.txt", "sk-" + ("a" * 20))
+    result = staged_check(repo)
+    assert not result["safe"] and "openai.txt" in str(result["problems"])
+    subprocess.run(["git", "reset", "-q"], cwd=repo, check=True)
+    _stage(repo, "safe.txt", "foreign_key=id and sort_keys remain ordinary text")
+    result = staged_check(repo)
+    assert result["safe"], result["problems"]
 
 
 def test_sanitize_folder_theme():
@@ -397,6 +491,17 @@ def test_sanitize_folder_theme():
     assert sanitize_folder_theme("???:::***") == "topic"
     # 末尾の区切り文字トリム
     assert sanitize_folder_theme("テスト_テーマ_") == "テスト_テーマ"
+
+
+def test_add_task_reports_duplicate_topic(tmp_path):
+    base = create_run(tmp_path, "重複確認")
+    first = add_task(base, "起源の調査")
+    again = add_task(base, "起源の調査")
+    assert first["task_id"]
+    assert again["added"] is False
+    assert again["task_id"] == first["task_id"]
+    assert "already exists" in again["reason"]
+    assert len(read_progress(base)["tasks"]) == 1
 
 
 def test_run_folder_naming_and_manifest(tmp_path):

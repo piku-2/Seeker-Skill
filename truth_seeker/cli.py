@@ -33,7 +33,7 @@ def output(x):
 def build_parser():
     p = argparse.ArgumentParser(
         prog="truth-seeker-tool",
-        description="Truth Seeker v1.1 engine; AI agent handles research and reasoning",
+        description="Truth Seeker v1.3 engine; AI agent handles research and reasoning",
     )
     s = p.add_subparsers(dest="command", required=True)
     a = s.add_parser("init")
@@ -168,7 +168,13 @@ def build_parser():
     a.add_argument("proposal")
     a = s.add_parser("repair-apply")
     a.add_argument("proposal")
-    a.add_argument("--approved", action="store_true")
+    a.add_argument(
+        "--approve",
+        dest="approve_id",
+        metavar="REPAIR_ID",
+        required=True,
+        help="Exact repair_id from the proposal; a boolean --approved flag is not accepted",
+    )
     a.add_argument("--root", default=".")
     a = s.add_parser("git-check")
     a.add_argument("--root", default=".")
@@ -358,7 +364,7 @@ def main(argv=None):
         elif args.command == "repair-show":
             output(inspect(".", args.proposal))
         elif args.command == "repair-apply":
-            output(apply(args.root, args.proposal, args.approved))
+            output(apply(args.root, args.proposal, args.approve_id))
         elif args.command == "git-check":
             output(staged_check(args.root))
     except LayoutError as e:
