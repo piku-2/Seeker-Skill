@@ -204,8 +204,41 @@ def _entry_metadata(item, policies, nodes):
     return item
 
 
+def _queue_payload(dest, raw, pending):
+    """Remember a library write. An identical file already at dest is reused."""
+    previous = dest.read_bytes() if dest.is_file() else None
+    if previous is not None and hashlib.sha256(previous).digest() == hashlib.sha256(raw).digest():
+        return
+    pending.append((dest, raw, previous))
+
+
+def _write_payloads(pending, published):
+    from tempfile import NamedTemporaryFile
+
+    for dest, raw, previous in pending:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        handle = NamedTemporaryFile(dir=dest.parent, delete=False)
+        tmp = Path(handle.name)
+        try:
+            handle.write(raw)
+            handle.close()
+            tmp.replace(dest)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        published.append((dest, previous))
+
+
+def _restore_payloads(published):
+    for dest, previous in reversed(published):
+        if previous is None:
+            dest.unlink(missing_ok=True)
+        else:
+            dest.write_bytes(previous)
+
+
 def save_catalog(run, batch):
-    """Index candidates in one transaction. Copy and inspect supplied files regardless of reuse state."""
+    """Index one batch. Inspect files immediately and publish bytes only after the batch validates."""
     from .model import load_generation
     from .scene import inspect_image
     from .store import atomic_json, progress_lock, read_progress
@@ -225,6 +258,7 @@ def save_catalog(run, batch):
             )
             policies[key] = policy
         entries = _index(current["candidates"], "id")
+        pending = []
         for key, patch in _index(batch.get("candidates", []), "id").items():
             ensure(
                 is_id("asset_" + key, "asset_"), f"images: invalid candidate ID {key}"
@@ -244,16 +278,7 @@ def save_catalog(run, batch):
                 dest = _local_path(
                     run, Path("image-library") / "files" / info["sha256"]
                 )
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                if (
-                    not dest.is_file()
-                    or hashlib.sha256(dest.read_bytes()).hexdigest() != info["sha256"]
-                ):
-                    from tempfile import NamedTemporaryFile
-
-                    with NamedTemporaryFile(dir=dest.parent, delete=False) as tmp:
-                        tmp.write(raw)
-                    Path(tmp.name).replace(dest)
+                _queue_payload(dest, raw, pending)
                 item.update(
                     info, local_path=str(dest.relative_to(run)), acquisition="verified"
                 )
@@ -306,7 +331,13 @@ def save_catalog(run, batch):
             "policies": list(policies.values()),
             "candidates": list(entries.values()),
         }
-        atomic_json(_catalog_file(run), catalog)
+        published = []
+        try:
+            _write_payloads(pending, published)
+            atomic_json(_catalog_file(run), catalog)
+        except BaseException:
+            _restore_payloads(published)
+            raise
         return catalog_summary(catalog)
 
 

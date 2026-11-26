@@ -241,8 +241,24 @@ def _asset_credit_fields(record):
     )
 
 
-def _asset_caption(record, related_labels, *, label_generated=True):
-    caption, *credits = (text for _, text in _asset_credit_fields(record))
+def _rights_clause(record, profile):
+    """Show the active output profile when the stored note lists every approval."""
+    if profile and "rights_note" not in record.get("display", {}):
+        proof = (record.get("image_use") or {}).get(profile)
+        if isinstance(proof, dict):
+            conditions = proof.get("conditions")
+            if isinstance(conditions, str) and conditions.strip():
+                return f"{profile}: {conditions}"
+    return _shown(record, "rights_note")
+
+
+def _asset_caption(record, related_labels, *, label_generated=True, profile=None):
+    fields = []
+    for name, text in _asset_credit_fields(record):
+        if name == "rights_note" and profile is not None:
+            text = _rights_clause(record, profile)
+        fields.append(text)
+    caption, *credits = fields
     if (
         label_generated
         and record.get("asset_type") == "generated"
@@ -537,7 +553,7 @@ def inspect_image(path):
     }
 
 
-def _prepare_assets(nodes, data, run_dir, evidence):
+def _prepare_assets(nodes, data, run_dir, evidence, profile):
     assets = []
     for record in _registered_assets(data, nodes.keys()):
         owners = _asset_owners(record) & nodes.keys()
@@ -601,7 +617,9 @@ def _prepare_assets(nodes, data, run_dir, evidence):
         asset["source_urls"] = list(dict.fromkeys(url for url in urls if url))
         others = owner_ids[1:] if primary else owner_ids
         asset["caption"] = _asset_caption(
-            record, "・".join(nodes[key]["label"] for key in others)
+            record,
+            "・".join(nodes[key]["label"] for key in others),
+            profile=profile,
         )
         assets.append(asset)
     return assets
@@ -775,7 +793,7 @@ def layout(
         }
         for edge in edges
     }
-    assets = _prepare_assets(positions, data, run_dir, evidence)
+    assets = _prepare_assets(positions, data, run_dir, evidence, image_profile)
     by_owner, by_band = defaultdict(list), defaultdict(list)
     for asset in assets:
         if "band_year" in asset:
@@ -1203,7 +1221,7 @@ def _check_graph_content(scene, graph_nodes, graph_edges, data):
         )
 
 
-def _check_inline_assets(scene, nodes, data, canvas, inline):
+def _check_inline_assets(scene, nodes, data, canvas, inline, profile):
     assets = scene["assets"]
     by_id = {asset["id"]: asset["record"] for asset in assets}
     _require(len(assets) == len(by_id), "asset_ids", "duplicate illustration IDs")
@@ -1361,6 +1379,7 @@ def _check_inline_assets(scene, nodes, data, canvas, inline):
                 label_generated=all(
                     "date_placement" in node for node in nodes.values()
                 ),
+                profile=profile,
             )
             _require(
                 caption == display_text(expected_caption)
@@ -1706,7 +1725,7 @@ def check_scene(scene, data=None):
             evidence_id=ref["evidence_id"],
         )
     if flexible:
-        _check_inline_assets(scene, nodes, data, canvas, inline)
+        _check_inline_assets(scene, nodes, data, canvas, inline, profile)
     if scene.get("asset_layout_version") == 1:
         assets = scene["assets"]
         if data is not None:

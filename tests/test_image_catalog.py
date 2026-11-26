@@ -214,3 +214,122 @@ def test_missing_basis_and_new_file_cannot_inherit_old_approval(tmp_path):
     )
     assert changed["identified"] == 0
     assert changed["approved"]["local"] == 0
+
+
+def _payloads(run):
+    files = run / "image-library" / "files"
+    return list(files.iterdir()) if files.is_dir() else []
+
+
+def test_rejected_batch_publishes_no_payload(tmp_path):
+    run = create_run(tmp_path, "架空の失敗登録")
+    commit_generation(run, sample())
+    bad = item("orphan", image_file(run, "orphan.png", "red"))
+    bad["node_ids"] = ["node_future_unmerged"]
+    with pytest.raises(ValidationError, match="missing adopted subjects"):
+        save_catalog(run, {"candidates": [bad]})
+    assert read_catalog(run)["candidates"] == []
+    assert _payloads(run) == []
+
+
+def test_failed_later_candidate_publishes_no_earlier_payload(tmp_path):
+    run = create_run(tmp_path, "架空の途中失敗")
+    commit_generation(run, sample())
+    good = item("cover", image_file(run, "cover.png", "orange"))
+    bad = item("other", image_file(run, "other.png", "blue"))
+    bad["node_ids"] = ["node_future_unmerged"]
+    with pytest.raises(ValidationError, match="missing adopted subjects"):
+        save_catalog(run, {"candidates": [good, bad]})
+    assert read_catalog(run)["candidates"] == []
+    assert _payloads(run) == []
+
+
+def test_failed_batch_keeps_a_payload_committed_earlier(tmp_path):
+    run = create_run(tmp_path, "架空の既存ファイル")
+    commit_generation(run, sample())
+    saved = save_catalog(
+        run, {"candidates": [item("cover", image_file(run, "cover.png", "orange"))]}
+    )
+    kept = run / saved["candidates"][0]["local_path"]
+    assert kept.is_file()
+    bad = item("other", image_file(run, "other.png", "blue"))
+    bad["node_ids"] = ["node_future_unmerged"]
+    with pytest.raises(ValidationError, match="missing adopted subjects"):
+        save_catalog(run, {"candidates": [bad]})
+    assert kept.is_file()
+    assert [item["id"] for item in read_catalog(run)["candidates"]] == ["cover"]
+    assert len(_payloads(run)) == 1
+
+
+def test_catalog_write_failure_removes_the_new_payload(tmp_path, monkeypatch):
+    run = create_run(tmp_path, "架空の書込失敗")
+    commit_generation(run, sample())
+
+    def fail(path, data):
+        raise OSError("catalog write failed")
+
+    monkeypatch.setattr("truth_seeker.store.atomic_json", fail)
+    with pytest.raises(OSError, match="catalog write failed"):
+        save_catalog(
+            run, {"candidates": [item("cover", image_file(run, "cover.png", "orange"))]}
+        )
+    assert read_catalog(run)["candidates"] == []
+    assert _payloads(run) == []
+
+
+def test_rendered_caption_shows_only_the_active_profile(tmp_path):
+    from truth_seeker.scene import check_scene, layout
+
+    run = create_run(tmp_path, "架空の表示範囲")
+    commit_generation(run, sample())
+    record = item("cover", image_file(run, "cover.png", "orange"))
+    record["authenticity"] = "verified"
+    record["uses"] = {
+        "distribution": {
+            "decision": "approved",
+            "policy_id": "dist",
+            "reason": "配布可。",
+        },
+        "local": {"decision": "approved", "policy_id": "loc", "reason": "個人可。"},
+    }
+    save_catalog(
+        run,
+        {
+            "policies": [
+                {
+                    "id": "dist",
+                    "profile": "distribution",
+                    "basis": "license",
+                    "source_url": RIGHTS,
+                    "conditions": "配布条件は作者名を表示する。",
+                },
+                {
+                    "id": "loc",
+                    "profile": "local",
+                    "basis": "permission",
+                    "source_url": RIGHTS,
+                    "conditions": "個人条件は画面内だけで見る。",
+                },
+            ],
+            "candidates": [record],
+        },
+    )
+    merged = load_generation(stage_catalog(run, run / "staging" / "caps")["stage"])
+    note = merged["assets"][0]["rights_note"]
+    assert note == (
+        "distribution: 配布条件は作者名を表示する。 / local: 個人条件は画面内だけで見る。"
+    )
+    for profile, shown, hidden in (
+        ("distribution", "配布条件は作者名を表示する。", "個人条件は画面内だけで見る。"),
+        ("local", "個人条件は画面内だけで見る。", "配布条件は作者名を表示する。"),
+    ):
+        scene = layout(merged, "run_caption", "題", run_dir=run, image_profile=profile)
+        assert check_scene(scene, merged)["status"] == "pass"
+        caption = next(
+            asset["caption"]
+            for asset in scene["assets"]
+            if asset["record"].get("catalog_id") == "cover"
+        )
+        assert shown in caption and hidden not in caption
+        assert f"{profile}:" in caption
+    assert merged["assets"][0]["rights_note"] == note
