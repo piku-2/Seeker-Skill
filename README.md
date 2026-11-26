@@ -1,4 +1,4 @@
-# Truth Seeker v1.2
+# Truth Seeker v1.3
 
 根拠付きの歴史調査から、一枚の時系列PDFとインタラクティブなHTML知識地図を生成するスキルです。
 このスキルで作った資料は商用利用できません。
@@ -104,7 +104,7 @@ node tests/explorer_browser.cjs /tmp/truth-seeker-browser/map-3.html /tmp/truth-
 
 ### 写真・実物史料の探索と確認
 
-`photo-candidates <run>` で重要ノードと採用済みの代表対象を確認する。候補には人物写真、実物、画面、パッケージ、書影、公式ビジュアル、文書、図面、当時の広告、保存されたウェブページが含まれる。実画像の探索・取得・同定・権利・採否を `illustrations-save` の `photo_plan` で記録し、`image-inspect <path>` で取得内容を点検できる。権利が未確認でも、取得できるファイルはカタログに残す。取得と掲載可否は別の判断である。`rights_unavailable` は、取得済みでまだ掲載できない状態であり、取得前に探索を終える理由ではない。完了時は、実写真・実物史料の代表対象カバレッジと各出力への掲載を、生成図表とは別に確認する。有用な未取得候補を不採用理由だけで十分と判定しない。[写真のデータ契約](references/data-contract.md#documentary-image-coverage)
+`photo-candidates <run_dir>` で重要ノードと採用済みの代表対象を確認する。候補には人物写真、実物、画面、パッケージ、書影、公式ビジュアル、文書、図面、当時の広告、保存されたウェブページが含まれる。実画像の探索・取得・同定・権利・採否を `illustrations-save` の `photo_plan` で記録し、`image-inspect <path>` で取得内容を点検できる。権利が未確認でも、取得できるファイルはカタログに残す。取得と掲載可否は別の判断である。`rights_unavailable` は、取得済みでまだ掲載できない状態であり、取得前に探索を終える理由ではない。完了時は、実写真・実物史料の代表対象カバレッジと各出力への掲載を、生成図表とは別に確認する。有用な未取得候補を不採用理由だけで十分と判定しない。[写真のデータ契約](references/data-contract.md#documentary-image-coverage)
 
 作品パッケージ、書影、公式ビジュアル、ゲーム画面も対象に含める。年代や仕様の説明であることだけでは `not_suitable` にしない。`images-save` で取得後のファイルと候補をまとめて保存し、`images-status` で未取得・失敗・掲載待ちを確認し、`images-stage` で確認済みの掲載可否に応じて登録する。`render --image-profile local` の個人閲覧用は標準の配布向けフォルダと分かれ、個別に確認した利用条件に従う。[画像収集と出力設定](references/data-contract.md#collecting-images-before-an-embedding-decision)
 
@@ -123,3 +123,16 @@ python -m truth_seeker execution-add "$RUN" --role subagent --phase research --m
 年代帯の中でカードと複数ノードの図表の寸法を使って配置を調整する。研究上の推定範囲と、明示的な先後関係による配置目安を区別し、根拠が足りない場合は年代不明の理由を記録する。
 
 `figure-candidates <generation_dir>` で採用グラフから図表候補を抽出し、比較年表・系統図・構成図・学説比較・史料対照などの採否を `illustrations-save` で保存する。掲載数に固定枠はなく、調査完了時に候補の検討と実際の描画を確認する。代表的な人物・場所・遺物などは、系譜調査と並行して `representatives-save` に採否を記録する。[データ契約](references/data-contract.md)
+
+
+### skill-repair
+
+コードの修正案を作るときは `/skill-repair`（Codexでは `$skill-repair`）を使います。経験ログは `experience/local/` を見て、修正案と対象ファイル、テスト内容を提示します。本人が提案の `repair_id` を明示して承認するまではリポジトリを変更しません。
+
+```bash
+python -m truth_seeker repair-show <proposal>
+python -m truth_seeker repair-apply <proposal> --approve <repair_id>
+python -m truth_seeker git-check
+```
+
+`repair-apply` のテストコマンドは `python -m pytest` または `uv run pytest` に限られます。Git への commit と push は、表示した差分を見たうえでの別承認が必要です。
