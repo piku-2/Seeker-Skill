@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from .execution import entry as execution_entry
+from .execution import identifiers
 from .illustrations import TASK_KIND, TASK_TOPIC, validate_search
 from .model import FILES, ValidationError, dump_records, load_generation, validate
 from .representatives import KIND as REPRESENTATIVES
@@ -90,7 +92,17 @@ def update_manifest(base, **fields):
     return mf
 
 
-def create_run(root, query, run_id=None, folder_name=None, *, plan_illustrations=False):
+def create_run(
+    root,
+    query,
+    run_id=None,
+    folder_name=None,
+    *,
+    plan_illustrations=False,
+    model=None,
+    harness=None,
+):
+    identity = identifiers(model, harness)
     run_id = run_id or ("run_" + uuid4().hex[:12])
     folder_name = folder_name or generate_run_folder_name(query)
     base = Path(root) / folder_name
@@ -127,6 +139,9 @@ def create_run(root, query, run_id=None, folder_name=None, *, plan_illustrations
             "updated_at": now,
             "artifacts": [],
             "status": "paused",
+            "execution_history": [
+                execution_entry(identity, "init", "main", "g000000", now)
+            ],
         },
     )
     return base
@@ -279,7 +294,8 @@ def _save_research_report(base, report, complete, kind, topic, prefix, validate_
         return task
 
 
-def resume(base):
+def resume(base, *, model=None, harness=None):
+    identity = identifiers(model, harness)
     base = Path(base)
     with progress_lock(base):
         pr = read_progress(base)
@@ -315,9 +331,53 @@ def resume(base):
             illustrations["last_error"] = "Review missing figure or photo plans"
         pr["run_status"] = "paused"
         atomic_json(base / "progress.json", pr)
-        if (base / "manifest.json").exists():
-            update_manifest(base, status="paused")
+        _append_execution(base, pr, identity, "resume", "main", status="paused")
         return pr
+
+
+def _append_execution(
+    base, progress, identity, phase, role, task_id=None, generation=None, **fields
+):
+    manifest = read_manifest(base) or {}
+    history = list(manifest.get("execution_history", []))
+    generation = generation or progress["active_generation"]
+    record = execution_entry(identity, phase, role, generation, utcnow(), task_id)
+    history.append(record)
+    update_manifest(
+        base,
+        run_id=progress["run_id"],
+        query=progress["query"],
+        execution_history=history,
+        **fields,
+    )
+    return record
+
+
+def add_execution(
+    base,
+    *,
+    model=None,
+    harness=None,
+    phase="research",
+    role="assistant",
+    task_id=None,
+    generation=None,
+):
+    identity = identifiers(model, harness)
+    base = Path(base)
+    with progress_lock(base):
+        progress = read_progress(base)
+        if task_id is not None and not any(
+            t["task_id"] == task_id for t in progress["tasks"]
+        ):
+            raise ValidationError("execution: unknown task")
+        if generation is not None:
+            if not re.fullmatch(r"g[0-9]+", generation):
+                raise ValidationError("execution: invalid generation")
+            verify_generation(base, generation)
+        return _append_execution(
+            base, progress, identity, phase, role, task_id, generation
+        )
 
 
 def add_task(base, topic, priority=0, parent_task_id=None):

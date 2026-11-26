@@ -112,6 +112,8 @@ DISPLAY_FIELDS = {
 def figure_text_fields(figure):
     """Yield field paths and original strings for user-supplied figure text."""
     kind = figure["kind"]
+    if "title" in figure:
+        yield "figure.title", figure["title"]
     if kind == "table":
         for i, text in enumerate(figure["columns"]):
             yield f"figure.columns.{i}", text
@@ -146,6 +148,7 @@ def _validate_display(record, group):
 
 def validate(records_by_type, *, include_placements=False):
     from .chronology import KINDS, resolve, valid_bounds
+    from .figures import EDGE_ROLES, validate_figure
 
     data = {k: list(records_by_type.get(k, [])) for k in FILES}
     prefix = {
@@ -256,6 +259,15 @@ def validate(records_by_type, *, include_placements=False):
         if "importance" in e:
             validate_importance(e["importance"], e["id"])
         ensure(e["relation_type"] in RELATIONS, f"{e['id']}: relation")
+        if "semantic_role" in e:
+            role = e["semantic_role"]
+            ensure(
+                role in EDGE_ROLES
+                and isinstance(e["direction_meaning"], str)
+                and bool(e["direction_meaning"].strip())
+                and (role != "component_of" or e["relation_type"] == "dependency"),
+                f"{e['id']}: invalid semantic role or missing direction",
+            )
         ensure(e["adoption_status"] in ADOPTIONS, f"{e['id']}: adoption")
         ensure(set(e["claim_ids"]) <= set(claims), f"{e['id']}: missing claim")
         if e["adoption_status"] == "adopted":
@@ -398,8 +410,6 @@ def validate(records_by_type, *, include_placements=False):
                     f"{key}: band figures need multiple related nodes",
                 )
             if kind == "generated":
-                from .figures import validate_figure
-
                 validate_figure(asset, nodes, edges, evidence, claims, chronology)
     for group, items in data.items():
         for item in items:

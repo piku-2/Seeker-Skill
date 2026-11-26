@@ -52,3 +52,7 @@ a { color: #175e74; }
   #detail { position: absolute; inset: auto 0 0 auto; width: min(24rem, 82vw); max-height: 58%; box-shadow: 0 0 1rem #19354638; }
   #controls-help { display: none; }
 }
+
+.execution { margin: 0 0 .7rem; font-size: .85rem; overflow-wrap: anywhere; }
+.execution p { margin: .3rem 0; }
+.execution ol { padding-left: 1.3rem; }

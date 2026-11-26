@@ -108,6 +108,16 @@ node tests/explorer_browser.cjs /tmp/truth-seeker-browser/map-3.html /tmp/truth-
 
 作品パッケージ、書影、公式ビジュアル、ゲーム画面も対象に含める。年代や仕様の説明であることだけでは `not_suitable` にしない。`images-save` で取得後のファイルと候補をまとめて保存し、`images-status` で未取得・失敗・掲載待ちを確認し、`images-stage` で確認済みの掲載可否に応じて登録する。`render --image-profile local` の個人閲覧用は標準の配布向けフォルダと分かれ、個別に確認した利用条件に従う。[画像収集と出力設定](references/data-contract.md#collecting-images-before-an-embedding-decision)
 
+### 調査に使ったモデルとハーネス
+
+```bash
+python -m truth_seeker init "調査テーマ" --model "確認済みのモデル識別子" --harness "確認済みのハーネス名"
+python -m truth_seeker resume "$RUN" --model "変更後のモデル識別子"
+python -m truth_seeker execution-add "$RUN" --role subagent --phase research --model "確認済みの補助モデル"
+```
+
+明示入力のない項目はホストが設定した `TRUTH_SEEKER_MODEL` と `TRUTH_SEEKER_HARNESS` を読み、値がなければ `unknown` と記録します。履歴は `manifest.json` に保存され、`status` とExplorerの実行情報で確認できます。PDF・SVGの表題付近には主担当のモデル、ハーネス、地図シーンの生成日時を表示します。通常の再描画では生成日時を更新し、部分再生成や保存シーンの再利用では同じ生成日時を保持します。調査開始日時と成果物の公開日時は個別に保存します。
+
 ### 動的配置・図表・代表例
 
 年代帯の中でカードと複数ノードの図表の寸法を使って配置を調整する。研究上の推定範囲と、明示的な先後関係による配置目安を区別し、根拠が足りない場合は年代不明の理由を記録する。

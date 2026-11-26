@@ -46,6 +46,8 @@ python -m truth_seeker status <run_dir>
 python -m truth_seeker resume <run_dir>
 ```
 
+モデルやハーネスの識別子を確認できる場合は `--model` と `--harness` を指定する。ホスト設定があれば読み取り、未確認項目は unknown として今回の履歴に残す。過去の履歴は残して再開する。
+
 このコマンドは既存の `resume()` が次を行うことを利用する:
 
 - `active_generation` のスナップショット整合性とチェックサムを検証する。

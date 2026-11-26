@@ -684,6 +684,29 @@ def _move_asset(asset, x, y):
     _offset_text(asset["text_lines"], x, y)
 
 
+def _visible_leader(points, obstacles):
+    # The gutter of one row can cross a panel in another row.
+    (x, start), (_, end), tip = points
+    hidden = sorted(
+        (max(start, top - 2), min(end, top + height + 2))
+        for left, top, width, height in obstacles
+        if left - 2 <= x <= left + width + 2
+        and top - 2 < end
+        and top + height + 2 > start
+    )
+    parts = []
+    cursor = start
+    for low, high in hidden:
+        if cursor < low:
+            parts.append([[x, cursor], [x, low]])
+        cursor = max(cursor, high)
+    if cursor < end:
+        parts.append([[x, cursor], [x, end], tip])
+    else:
+        parts.append([[x, end], tip])
+    return parts
+
+
 def layout(
     data,
     run_id="run_manual",
@@ -692,6 +715,7 @@ def layout(
     *,
     run_dir=None,
     image_profile="distribution",
+    execution=None,
 ):
     from .images import scoped_data
 
@@ -832,6 +856,11 @@ def layout(
                     "importance": DEFAULT_IMPORTANCE,
                     "bbox": [0, 0, panel_width, panel_height],
                     "panel": asset,
+                    "panel_owners": sorted(
+                        key
+                        for key in _asset_owners(asset["record"]) & positions.keys()
+                        if positions[key]["anchor_year"] == year
+                    ),
                 }
             )
     years = sorted(year for year in groups if year is not None)
@@ -861,8 +890,27 @@ def layout(
     )
     width = content_x + content_width + GUTTER + 26
     title_lines = text_lines(title, 44, 34, width - 88, 23, "#243747", "map_title")
+    execution_lines = []
+    if execution is not None:
+        from .execution import map_labels
+
+        execution_lines = text_lines(
+            map_labels(execution),
+            44,
+            _end(title_lines) + 5,
+            width - 88,
+            9,
+            "#526474",
+            "execution",
+        )
     legend = text_lines(
-        LEGEND, 44, _end(title_lines) + 9, width - 88, 10, "#243747", "legend"
+        LEGEND,
+        44,
+        _end(execution_lines or title_lines) + 9,
+        width - 88,
+        10,
+        "#243747",
+        "legend",
     )
     # Color keys are shared text objects so they remain selectable in PDF.
     key_lines = []
@@ -938,6 +986,12 @@ def layout(
         band_bottom = cursor
         if year is not None:
             y = max(y + chronology[year], band_bottom + 1)
+
+    for node in shown:
+        if "anchor_leader" in node:
+            node["anchor_leader_segments"] = _visible_leader(
+                node["anchor_leader"], obstacles.values()
+            )
 
     columns = (gutter_left + 8, width - 39)
     drawn_edges = []
@@ -1040,7 +1094,8 @@ def layout(
         },
         "content_x": content_x,
         "lane_top": track_top,
-        "header_lines": title_lines + legend + key_lines,
+        "header_lines": title_lines + execution_lines + legend + key_lines,
+        **({"execution": execution} if execution is not None else {}),
         "nodes": shown,
         "edges": drawn_edges,
         "sources": refs,
@@ -1051,6 +1106,7 @@ def layout(
         "edge_endpoints": {e["id"]: [e["source_id"], e["target_id"]] for e in edges},
         "layout_revision": 4,
         "asset_layout_version": 2,
+        "figure_presentation": "relationship_labels",
         "assets": assets,
         "gallery_y": gallery_top,
         "importance_overrides": importance,
@@ -1305,7 +1361,13 @@ def _check_inline_assets(scene, nodes, data, canvas, inline, profile):
                     for e in scene["edges"]
                 }
                 shapes, lines, _ = draw_figure(
-                    _display_figure(record), box[0], box[1], box[2], nodes, graph_edges
+                    _display_figure(record),
+                    box[0],
+                    box[1],
+                    box[2],
+                    nodes,
+                    graph_edges,
+                    legacy="figure_presentation" not in scene,
                 )
                 actual = asset.get("shapes", [])
                 _require(

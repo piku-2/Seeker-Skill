@@ -69,6 +69,10 @@ def _output_status(base, progress, profile, data):
             fmt for fmt in ("pdf", "html", "svg") if (folder / f"map.{fmt}").is_file()
         ],
         "published_generation": scene.get("graph_generation") if scene else None,
+        "generated_at": scene.get("execution", {}).get("generated_at")
+        if scene
+        else None,
+        "published_at": result.get("published_at"),
         "pending_layout": (folder / "scene-pending.json").is_file(),
         "placed_images": len(rasters) if current else None,
         "generated_figures": sum("figure_bbox" in a for a in scene.get("assets", []))
@@ -155,6 +159,7 @@ def status(run):
     return {
         **progress,
         "summary": {
+            "execution_history": manifest.get("execution_history", []),
             "last_updated_at": max(
                 [
                     value

@@ -1,5 +1,6 @@
 """Find structures worth reviewing, and validate saved figure decisions."""
 
+import json
 from collections import defaultdict
 
 from .chronology import is_text
@@ -24,6 +25,7 @@ def opportunities(data):
     nodes = {n["id"]: n for n in data["nodes"] if n["adoption_status"] == "adopted"}
     groups = defaultdict(set)
     links = defaultdict(set)
+    edges = {edge["id"]: edge for edge in data["edges"]}
 
     for edge in data["edges"]:
         if edge["adoption_status"] != "adopted":
@@ -47,16 +49,31 @@ def opportunities(data):
         if node["type"] == "document":
             groups["sources"].add(key)
 
-    return [
-        {
-            "id": f"graph-{kind}",
-            "category": kind,
-            "node_ids": sorted(ids),
-            "edge_ids": sorted(links[kind]),
-        }
-        for kind, ids in sorted(groups.items())
-        if len(ids) >= 2
-    ]
+    result = []
+    for kind, ids in sorted(groups.items()):
+        if len(ids) < 2:
+            continue
+        referenced_edges = [edges[eid] for eid in sorted(links[kind])]
+        roles = {edge.get("semantic_role") for edge in referenced_edges}
+        category, suggested_kind = kind, None
+        if kind == "lineage":
+            category, suggested_kind = "precedence", "relations"
+        elif kind == "composition":
+            if roles == {"component_of"}:
+                suggested_kind = "composition"
+            else:
+                category, suggested_kind = "dependencies", "relations"
+        result.append(
+            {
+                "id": f"graph-{kind}",
+                "category": category,
+                "node_ids": sorted(ids),
+                "edge_ids": sorted(links[kind]),
+                "semantic_roles": sorted(roles - {None}),
+                **({"suggested_kind": suggested_kind} if suggested_kind else {}),
+            }
+        )
+    return result
 
 
 def validate_plan(plan, data):
@@ -134,6 +151,34 @@ def validate_review(review, data):
         and is_text(review.get("findings")),
         "figures: semantic review missing",
     )
+    seen = {}
+    for asset in data["assets"]:
+        if asset["asset_type"] != "generated":
+            continue
+        figure = asset["figure"]
+        if "edge_ids" in figure:
+            contents = ("edges", tuple(sorted(figure["edge_ids"])))
+        elif figure["kind"] == "timeline":
+            contents = ("timeline", tuple(sorted(figure["node_ids"])))
+        else:
+            rows = sorted(
+                json.dumps(
+                    {key: value for key, value in row.items() if key != "evidence_ids"},
+                    sort_keys=True,
+                )
+                for row in figure["rows"]
+            )
+            contents = (
+                figure["kind"],
+                tuple(figure.get("columns", ())),
+                figure.get("unit"),
+                tuple(rows),
+            )
+        ensure(
+            contents not in seen,
+            f"figures: {asset['id']} duplicates the content of {seen.get(contents)}",
+        )
+        seen[contents] = asset["id"]
     items = review.get("assets")
     expected = {a["id"] for a in data["assets"] if a.get("asset_type") == "generated"}
     ensure(

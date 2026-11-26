@@ -10,6 +10,7 @@ from .qa import judge
 from .repair import RepairError, apply, inspect, staged_check
 from .scene import check_font_coverage
 from .store import (
+    add_execution,
     add_task,
     atomic_json,
     commit_generation,
@@ -38,6 +39,8 @@ def build_parser():
     a = s.add_parser("init")
     a.add_argument("topic")
     a.add_argument("--runs", default="runs")
+    a.add_argument("--model")
+    a.add_argument("--harness")
     a = s.add_parser("task-add")
     a.add_argument("run")
     a.add_argument("topic")
@@ -75,6 +78,19 @@ def build_parser():
     a.add_argument("run")
     a = s.add_parser("resume")
     a.add_argument("run")
+    a.add_argument("--model")
+    a.add_argument("--harness")
+    from .execution import PHASES, ROLES
+
+    a = s.add_parser("execution-add", help="Append a confirmed execution record")
+    a.add_argument("run")
+    a.add_argument("--model")
+    a.add_argument("--harness")
+    a.add_argument("--role", choices=ROLES, default="assistant")
+    a.add_argument("--phase", choices=PHASES, default="research")
+    a.add_argument("--task-id")
+    a.add_argument("--generation")
+
     a = s.add_parser("validate")
     a.add_argument("generation")
     a = s.add_parser(
@@ -163,7 +179,13 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         if args.command == "init":
-            run = create_run(args.runs, args.topic, plan_illustrations=True)
+            run = create_run(
+                args.runs,
+                args.topic,
+                plan_illustrations=True,
+                model=args.model,
+                harness=args.harness,
+            )
             output({"run": str(run), "status": "paused"})
         elif args.command == "task-add":
             output(add_task(args.run, args.topic, args.priority))
@@ -180,7 +202,19 @@ def main(argv=None):
 
             output(status(args.run))
         elif args.command == "resume":
-            output(resume(args.run))
+            output(resume(args.run, model=args.model, harness=args.harness))
+        elif args.command == "execution-add":
+            output(
+                add_execution(
+                    args.run,
+                    model=args.model,
+                    harness=args.harness,
+                    phase=args.phase,
+                    role=args.role,
+                    task_id=args.task_id,
+                    generation=args.generation,
+                )
+            )
         elif args.command == "validate":
             output(validate(load_generation(args.generation)))
         elif args.command == "figure-candidates":

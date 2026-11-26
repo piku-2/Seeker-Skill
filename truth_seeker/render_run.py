@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from .execution import scene_metadata
 from .images import check_catalog_assets, read_catalog, scoped_data
 from .layout_quality import layout_metrics
 from .model import ensure, load_generation
@@ -12,6 +13,7 @@ from .scene import _asset_image, _registered_assets, check_scene, layout
 from .store import (
     atomic_json,
     progress_lock,
+    read_manifest,
     read_progress,
     update_manifest,
     verify_generation,
@@ -40,7 +42,17 @@ def _inputs(run, progress, profile, data):
         else:
             raw, _, _ = _asset_image(item, run)
             rasters[item["id"]] = hashlib.sha256(raw).hexdigest()
+    history = (read_manifest(run) or {}).get("execution_history")
     return {
+        **(
+            {
+                "execution_sha256": hashlib.sha256(
+                    json.dumps(history, sort_keys=True).encode()
+                ).hexdigest()
+            }
+            if history
+            else {}
+        ),
         "run_id": progress["run_id"],
         "generation": generation,
         "profile": profile,
@@ -141,6 +153,7 @@ def render_run(
                     importance,
                     run_dir=run,
                     image_profile=profile,
+                    execution=scene_metadata(progress, read_manifest(run) or {}),
                 )
                 scene.update(graph_generation=generation, render_inputs=inputs)
             if fmt == "layout":

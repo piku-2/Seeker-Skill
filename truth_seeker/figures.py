@@ -14,6 +14,54 @@ EDGE_FIGURES = ("relations", "lineage", "composition")
 FIGURE_KINDS = (*EDGE_FIGURES, "timeline", "table", "bar", "distribution")
 
 
+EDGE_ROLES = (
+    "technical_succession",
+    "product_development",
+    "organization_change",
+    "conceptual_influence",
+    "textual_transmission",
+    "textual_revision",
+    "component_of",
+)
+FIGURE_MEANINGS = {
+    **{role: ("relations", "lineage") for role in EDGE_ROLES},
+    "component_of": ("relations", "composition"),
+    "dependency": ("relations",),
+    "relationship_overview": ("relations",),
+    "precedence": ("relations", "lineage", "timeline"),
+    "quantitative_comparison": ("table", "bar"),
+    "comparison": ("table",),
+    "source_concordance": ("table",),
+    "geographic_distribution": ("distribution",),
+    "dispute": ("relations", "table"),
+}
+RELATION_LABELS = {
+    "dependency": "依存",
+    "influence": "影響",
+    "context": "背景",
+    "confluence": "合流",
+    "parallel": "並行",
+    "opposition": "対立",
+    "hypothesis": "仮説",
+    "other": "その他",
+}
+
+
+def _meaning_matches(meaning, edge, claims):
+    if meaning == "relationship_overview":
+        return True
+    if meaning in EDGE_ROLES:
+        return edge.get("semantic_role") == meaning
+    if meaning == "precedence":
+        return "chronology" in edge
+    if meaning == "dependency":
+        return edge["relation_type"] == "dependency"
+    return edge["relation_type"] in ("opposition", "hypothesis") or any(
+        claims[cid]["assessment"] in ("contested", "hypothetical")
+        for cid in edge["claim_ids"]
+    )
+
+
 def _text(value):
     return isinstance(value, str) and bool(value.strip())
 
@@ -34,6 +82,17 @@ def validate_figure(asset, nodes, edges, evidence, claims, chronology):
         kind in FIGURE_KINDS,
         f"{key}: unknown figure kind",
     )
+    meaning = figure.get("meaning")
+    if "title" in figure or "meaning" in figure:
+        title = figure.get("title")
+        ensure(
+            _text(title)
+            and len(title) <= 160
+            and title.splitlines() == [title]
+            and isinstance(meaning, str)
+            and kind in FIGURE_MEANINGS.get(meaning, ()),
+            f"{key}: figure title and compatible meaning are required together",
+        )
     refs = set(asset.get("evidence_ids", []))
     ensure(
         bool(refs)
@@ -100,6 +159,11 @@ def validate_figure(asset, nodes, edges, evidence, claims, chronology):
             f"{key}: relationships must reference distinct adopted edges between figure owners",
         )
         for eid in ids:
+            if meaning is not None:
+                ensure(
+                    _meaning_matches(meaning, edges[eid], claims),
+                    f"{key}: figure meaning {meaning} differs from edge {eid}",
+                )
             edge_sources = {
                 ref
                 for cid in edges[eid]["claim_ids"]
@@ -162,7 +226,7 @@ def preferred_width(figure):
     return 360
 
 
-def draw_figure(figure, x, top, width, nodes, edges):
+def draw_figure(figure, x, top, width, nodes, edges, *, legacy=False):
     shapes, lines = [], []
     y = top
 
@@ -176,6 +240,8 @@ def draw_figure(figure, x, top, width, nodes, edges):
         return box[1] + box[3]
 
     kind = figure["kind"]
+    if figure.get("title"):
+        y = label(figure["title"], x, y, width) + 8
     if kind in ("table", "timeline"):
         if kind == "timeline":
             ordered = sorted(
@@ -209,13 +275,20 @@ def draw_figure(figure, x, top, width, nodes, edges):
                 )
             y += h + 1
     elif kind in EDGE_FIGURES:
-        if kind == "lineage":
+        # Reconstruct the old geometry only when checking an archived scene.
+        if legacy and kind == "lineage":
             y = (
                 label("本文の伝承・翻訳・継承（関係の種類は各行に表示）", x, y, width)
                 + 8
             )
-        if kind == "composition":
+        if legacy and kind == "composition":
             y = label("全体と構成要素（矢印は年代順を示さない）", x, y, width) + 8
+        if (
+            kind == "composition"
+            and not legacy
+            and figure.get("meaning") != "component_of"
+        ):
+            kind = "relations"
         box_width = width * 0.25
         middle = x + box_width
         right = x + 3 * box_width
@@ -252,6 +325,13 @@ def draw_figure(figure, x, top, width, nodes, edges):
                     )
                 ]
                 relation = edge["label"] or edge["relation_type"]
+                if not legacy:
+                    relation_type = RELATION_LABELS[edge["relation_type"]]
+                    relation = (
+                        f"{edge['label']}（{relation_type}）"
+                        if edge["label"]
+                        else relation_type
+                    )
                 if qualifiers:
                     relation += "（" + "・".join(qualifiers) + "）"
                 end = label(relation, middle + 12, y + 6, 2 * box_width - 24)

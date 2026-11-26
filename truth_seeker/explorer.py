@@ -6,6 +6,7 @@ from functools import cache
 from pathlib import Path
 
 from .chronology import KINDS
+from .execution import summary
 from .model import LayoutError
 
 
@@ -44,6 +45,7 @@ def payload(scene):
     )
     sources = ("number", "evidence_id", "title", "source_url", "locator")
     return {
+        **({"execution": scene["execution"]} if "execution" in scene else {}),
         "date_kinds": KINDS,
         "width": scene["canvas_width"],
         "height": scene["canvas_height"],
@@ -82,6 +84,10 @@ def check_data(scene, document):
     text = document.split(DATA_TAG, 1)[1].split("</script>", 1)[0]
     if text != serialized(scene):
         raise LayoutError("explorer_data", "HTML Explorer data differs from the scene")
+    if "execution" in scene and _execution_section(scene["execution"]) not in document:
+        raise LayoutError(
+            "explorer_data", "HTML execution summary differs from the scene"
+        )
 
 
 @cache
@@ -91,6 +97,33 @@ def _static(name):
         .with_name("explorer_ui")
         .joinpath(name)
         .read_text(encoding="utf-8")
+    )
+
+
+def _execution_section(metadata):
+    if metadata is None:
+        return ""
+    model, harness, generated = summary(metadata)
+    escape = html.escape
+    rows = []
+    for item in metadata["history"]:
+        parts = [item["recorded_at"], item["generation"], item["phase"], item["role"]]
+        if item.get("task_id"):
+            parts.append(item["task_id"])
+        parts += [
+            f"Model {item['model']} ({item['model_source']})",
+            f"Harness {item['harness']} ({item['harness_source']})",
+        ]
+        rows.append(f"<li>{escape(' · '.join(parts))}</li>")
+    detail = f"<p>Run {escape(metadata['run_id'])}</p>"
+    if metadata.get("started_at"):
+        detail += f"<p>調査開始 {escape(metadata['started_at'])}</p>"
+    if rows:
+        detail += "<ol>" + "".join(rows) + "</ol>"
+    synopsis = f"Model {model} · Harness {harness} · Generated {generated}"
+    return (
+        f'<div class="execution"><p data-execution-summary>{escape(synopsis)}</p>'
+        f"<details><summary>実行情報</summary>{detail}</details></div>"
     )
 
 
@@ -107,6 +140,7 @@ def render(scene, svg):
 <div class="camera"><button id="zoom-out" aria-label="縮小">−</button><output id="zoom-level"></output>
 <button id="zoom-in" aria-label="拡大">＋</button><button id="fit">全体表示</button></div></header>
 <main><aside id="browse" aria-label="地図の検索と絞り込み">
+{_execution_section(scene.get("execution"))}
 <label for="search">対象を検索</label><input id="search" type="search" placeholder="名称・別名・説明・用語" autocomplete="off">
 <details open><summary>表示条件</summary><div id="filters">
 <label>重要度<select id="level"><option value="">すべて</option></select></label>

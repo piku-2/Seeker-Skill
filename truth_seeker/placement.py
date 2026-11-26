@@ -24,6 +24,10 @@ def _neighbors(edges, cards, weights):
         score = affinity * weights[edge["id"]]["level"] / (1 + years / (75 + years))
         near[a][b] = near[a].get(b, 0) + score
         near[b][a] = near[b].get(a, 0) + score
+    for key, panel in cards.items():
+        for owner in panel.get("panel_owners", ()):
+            near[key][owner] = 0.16
+            near[owner][key] = 0.16
     return near
 
 
@@ -86,10 +90,16 @@ def place_rows(groups, edges, weights, chronological, minimum_width=0):
     # Width trials grow geometrically and stop at the width of the widest
     # unbroken band. Charge for width as well as measured vertical extent.
     candidates = {widest, widest_band}
+    mixed_band = any(
+        len(group) >= 6 and any("panel" in item for item in group)
+        for group in ordered.values()
+    )
+    growth = 1.28 if mixed_band else 1.45
+    width_cost = 0.40 if mixed_band else 0.35
     capacity = widest + typical * 0.45
     while capacity < widest_band:
         candidates.add(capacity)
-        capacity *= 1.45
+        capacity *= growth
     best = None
     for capacity in sorted(candidates):
         packed = _pack(ordered, capacity)
@@ -97,15 +107,31 @@ def place_rows(groups, edges, weights, chronological, minimum_width=0):
             minimum_width,
             max(_row_width(row) for rows in packed.values() for row in rows),
         )
-        height = sum(
-            max(
-                chronological[year],
-                sum(max(n["bbox"][3] for n in row) + ROW_GAP for row in rows),
-            )
+        band_heights = {
+            year: sum(max(n["bbox"][3] for n in row) + ROW_GAP for row in rows)
             for year, rows in packed.items()
+        }
+        height = sum(
+            max(chronological[year], band_height)
+            for year, band_height in band_heights.items()
+        )
+        # Calendar gaps elsewhere do not make a dense band easier to scan.
+        # Use the occupied height and widest unsplit item in each crowded band.
+        elongation = max(
+            (
+                max(0, max(map(_row_width, rows)) - 4 * band_heights[year])
+                for year, rows in packed.items()
+                if len(ordered[year]) >= 6
+            ),
+            default=0,
         )
         if len(cards) > 1:
-            score = 1.4 * height + 0.35 * width + 0.4 * max(0, width - 3 * height)
+            score = (
+                1.4 * height
+                + width_cost * width
+                + 0.4 * max(0, width - 3 * height)
+                + 0.8 * elongation
+            )
         else:
             score = width
         if best is None or score < best[0] - 1:

@@ -11,6 +11,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
+from datetime import datetime, timezone
 from itertools import pairwise
 from pathlib import Path
 
@@ -84,6 +85,9 @@ def render_svg(scene):
         "</defs>",
         f'<rect width="100%" height="100%" fill="{background}"/><rect width="100%" height="100%" fill="url(#grid)"/>',
     ]
+    if "execution" in scene:
+        metadata = html.escape(json.dumps(scene["execution"], ensure_ascii=False))
+        parts.append(f'<metadata id="execution">{metadata}</metadata>')
     for x, y, width, height in _background_bands(scene):
         parts.append(
             f'<rect x="{x}" y="{y}" width="{width}" height="{height}" fill="#FFFFFF" fill-opacity="0.42"/>'
@@ -93,7 +97,16 @@ def render_svg(scene):
             f'<line x1="96" y1="{y}" x2="{w - 35}" y2="{y}" stroke="#A7BBC4" stroke-width="0.8" stroke-dasharray="4,5"/>'
         )
     for node in scene["nodes"]:
-        if "anchor_leader" in node:
+        if "anchor_leader_segments" in node:
+            segments = "".join(
+                f'<polyline points="{_svg_points(points)}"/>'
+                for points in node["anchor_leader_segments"]
+            )
+            parts.append(
+                f'<g data-anchor-leader="{html.escape(node["node_id"])}" fill="none" '
+                f'stroke="{node["color"]}" stroke-dasharray="2,3">{segments}</g>'
+            )
+        elif "anchor_leader" in node:
             parts.append(
                 f'<polyline data-anchor-leader="{html.escape(node["node_id"])}" points="{_svg_points(node["anchor_leader"])}" fill="none" stroke="{node["color"]}" stroke-dasharray="2,3"/>'
             )
@@ -242,7 +255,8 @@ def render_pdf(scene, path):
     for node in scene["nodes"]:
         if "anchor_leader" in node:
             c.setStrokeColor(HexColor(node["color"]))
-            c.drawPath(line_path(node["anchor_leader"]))
+            for points in node.get("anchor_leader_segments", [node["anchor_leader"]]):
+                c.drawPath(line_path(points))
     c.setDash()
     for edge in scene["edges"]:
         style = edge["style"]
@@ -291,6 +305,14 @@ def _check_svg(scene, svg, html_document):
 
     check_data(scene, html_document)
     root = ET.fromstring(svg)
+    if "execution" in scene:
+        metadata = root.find(f"{SVG_NS}metadata[@id='execution']")
+        if metadata is None or metadata.text != json.dumps(
+            scene["execution"], ensure_ascii=False
+        ):
+            raise LayoutError(
+                "artifact_metadata", "SVG execution metadata differs from scene"
+            )
     nodes = {
         group.get("data-node-id"): group
         for group in root.findall(f"{SVG_NS}g")
@@ -653,6 +675,8 @@ def _build_outputs(scene, out_dir, force_pdf_error=False):
 
 
 def _write_result(scene, result, staging, destination, names):
+    if "execution" in scene:
+        result.setdefault("published_at", datetime.now(timezone.utc).isoformat())
     result.update(
         generation=scene.get("graph_generation"),
         image_profile=scene.get("image_profile", "distribution"),
