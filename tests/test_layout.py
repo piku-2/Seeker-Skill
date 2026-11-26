@@ -1,4 +1,4 @@
-"""Regression coverage for Truth Seeker v1.1 layout and artifact QA."""
+"""Regression coverage for Truth Seeker v1.3 layout and artifact QA."""
 
 import re
 import xml.etree.ElementTree as ET
