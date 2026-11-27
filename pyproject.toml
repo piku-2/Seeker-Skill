@@ -5,7 +5,11 @@ build-backend = "setuptools.build_meta"
 name = "truth-seeker"
 version = "1.3.0"
 description = "Personal evidence-based history map and skill repair agent tooling"
+license = { text = "MIT" }
 requires-python = ">=3.10"
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+]
 dependencies = [
     "reportlab>=3.6",
     "Pillow>=9",

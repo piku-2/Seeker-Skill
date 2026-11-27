@@ -136,3 +136,7 @@ python -m truth_seeker git-check
 ```
 
 `repair-apply` のテストコマンドは `python -m pytest` または `uv run pytest` に限られます。Git への commit と push は、表示した差分を見たうえでの別承認が必要です。
+
+## ライセンス
+
+コードは MIT License、同梱フォントは SIL Open Font License 1.1 です。詳細は [LICENSE](LICENSE) を参照してください。
