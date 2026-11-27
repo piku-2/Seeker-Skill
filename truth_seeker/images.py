@@ -356,6 +356,16 @@ def catalog_summary(catalog):
         },
         "not_attempted": sum(i.get("acquisition") == "not_attempted" for i in items),
         "failed": sum(i.get("acquisition") == "failed" for i in items),
+        "acquired_rights_unconfirmed_by_profile": {
+            profile: sum(
+                item.get("acquisition") == "verified"
+                and item.get("authenticity", "unreviewed") != "rejected"
+                and item.get("terms_status", "unreviewed") in ("unreviewed", "not_found")
+                and item.get("uses", {}).get(profile, {}).get("decision") != "approved"
+                for item in items
+            )
+            for profile in PROFILES
+        },
         "embedding_pending": sum(
             i.get("acquisition") == "verified"
             and not any(

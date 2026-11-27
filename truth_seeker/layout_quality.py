@@ -69,7 +69,22 @@ def layout_metrics(scene):
         if (box := a.get("reserved_bbox", a.get("bbox"))) is not None
     }
     paths = [PathSample(edge["path"]) for edge in scene["edges"]]
-    crossings = sum(a.crosses(b) for a, b in combinations(paths, 2))
+    edges = scene["edges"]
+
+    def endpoints(edge):
+        return {
+            (edge[f"{role}_node_id"], edge.get(f"{role}_port", {}).get("side"))
+            for role in ("source", "target")
+        }
+
+    crossings = same_card = same_side = 0
+    ports = [endpoints(edge) for edge in edges]
+    for (first, path_a), (second, path_b) in combinations(zip(ports, paths), 2):
+        if not path_a.crosses(path_b):
+            continue
+        crossings += 1
+        same_card += bool({key for key, _ in first} & {key for key, _ in second})
+        same_side += any(side is not None for _, side in first & second)
     node_hits = 0
     panel_hits = 0
     obstacles = {**nodes, **panels}
@@ -104,11 +119,18 @@ def layout_metrics(scene):
     lengths = [p.length for p in paths]
     return {
         "crossing_pairs": crossings,
+        "crossings_sharing_card": same_card,
+        "crossings_sharing_port_side": same_side,
         "edge_node_collisions": node_hits,
         "edge_asset_collisions": panel_hits,
         "card_overlaps": overlaps,
         "total_edge_length_pt": round(sum(lengths), 2),
         "max_edge_length_pt": round(max(lengths, default=0), 2),
+        "longest_edge_id": max(zip(edges, lengths), key=lambda item: item[1])[0].get(
+            "edge_id"
+        )
+        if edges
+        else None,
         "important_node_congestion": sorted(
             hubs, key=lambda h: (-h["nearby_unrelated_edges"], h["node_id"])
         ),

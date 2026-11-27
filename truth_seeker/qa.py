@@ -8,6 +8,7 @@ from pathlib import Path
 from .chronology import is_text
 from .figure_plan import validate_plan, validate_review
 from .illustrations import validate_search, validate_visual_review
+from .image_inventory import image_inventory, other_images_for_targets
 from .images import (
     audit_catalog,
     catalog_summary,
@@ -51,6 +52,7 @@ def _illustration_qa(data, scene, review, progress, run_dir):
         "image_count": images,
         "generated_figure_count": figures,
         "task_status": task["status"] if task else "missing",
+        "image_inventory": image_inventory(scene),
     }
     try:
         ensure(
@@ -95,6 +97,7 @@ def _illustration_qa(data, scene, review, progress, run_dir):
             "render-local" if scene.get("image_profile") == "local" else "render"
         )
         result["formats"] = check_saved_artifacts(scene, Path(run_dir) / directory)
+        result["image_inventory"] = image_inventory(scene, result["formats"])
     except (
         ValueError,
         OSError,
@@ -182,7 +185,9 @@ def _figure_qa(data, review, progress, illustration):
     return {"status": "pass", "candidate_count": count}
 
 
-def _photo_qa(data, scene, review, progress, illustrations, representatives, run_dir=None):
+def _photo_qa(
+    data, scene, review, progress, illustrations, representatives, run_dir=None
+):
     nonvector = [a for a in scene.get("assets", []) if "bbox" in a]
     drawn = [a for a in nonvector if a["record"].get("asset_type") in DOCUMENTARY_TYPES]
     result = {
@@ -223,6 +228,9 @@ def _photo_qa(data, scene, review, progress, illustrations, representatives, run
         coverage = validate_photo_search(report, data, reps)
         drawn_ids = {a["id"] for a in drawn}
         result.update(metrics(coverage, drawn_ids))
+        result["other_images_by_unillustrated_target"] = other_images_for_targets(
+            scene, set(result["unillustrated_targets"]), DOCUMENTARY_TYPES
+        )
         ensure(
             drawn_ids == coverage["assets"].keys(),
             "photos: registered images absent from output",
@@ -255,16 +263,10 @@ def _catalog_qa(data, scene, report, run_dir):
     catalog = read_catalog(run_dir)
     summary = catalog_summary(catalog)
     result = {key: value for key, value in summary.items() if key != "candidates"}
-    result["rendered"] = sum(
-        "catalog_id" in item.get("record", {}) and "bbox" in item
-        for item in scene.get("assets", [])
-    )
+    images = image_inventory(scene)
+    result["rendered"] = images["catalog_linked_rasters"]
     result["rendered_by_kind"] = {
-        kind: sum(
-            a.get("record", {}).get("asset_type") == kind and "bbox" in a
-            for a in scene.get("assets", [])
-        )
-        for kind in DOCUMENTARY_TYPES
+        kind: images["raster_images_by_kind"][kind] for kind in DOCUMENTARY_TYPES
     }
     try:
         audit_catalog(catalog, data, report, run_dir)

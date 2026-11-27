@@ -60,6 +60,10 @@ def test_unreviewed_batch_keeps_acquired_and_unavailable_candidates(tmp_path):
     result = save_catalog(run, {"candidates": [a, missing]})
     assert (result["discovered"], result["acquired"], result["identified"]) == (2, 1, 0)
     assert result["approved"] == {"distribution": 0, "local": 0}
+    assert result["acquired_rights_unconfirmed_by_profile"] == {
+        "distribution": 1,
+        "local": 1,
+    }
     retained = result["candidates"][0]
     assert (run / retained["local_path"]).is_file()
     assert retained["source_page_url"] != retained["media_url"]
@@ -159,6 +163,16 @@ def test_local_approval_is_isolated_from_distribution_and_uses_reusable_policy(
         checked = json.loads(capsys.readouterr().out)
         assert checked["status"] == "complete"
         assert checked["photos"]["work_visual_count"] == count
+        counts = checked["illustrations"]["image_inventory"]
+        assert counts["catalog_linked_rasters"] == count
+        assert counts["noncatalog_rasters"] == 0
+        assert counts["verified_raster_images_by_format"] == dict.fromkeys(
+            ("pdf", "svg", "html"), count
+        )
+        assert checked["image_catalog"]["acquired_rights_unconfirmed_by_profile"] == {
+            "distribution": 2,
+            "local": 0,
+        }
         assert checked["photos"]["rights_cleared_count"] == count
         assert checked["photos"]["not_embeddable_count"] == 2 - count
         assert checked["photos"]["rights_pending_count"] == 0

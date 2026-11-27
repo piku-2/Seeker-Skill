@@ -4,7 +4,7 @@ from bisect import bisect_left
 from collections import defaultdict
 from functools import cache
 from heapq import heappop, heappush
-from itertools import pairwise
+from itertools import pairwise, product
 from math import dist
 
 from .model import LayoutError
@@ -416,8 +416,84 @@ def _initial_routes(edges, positions, obstacles, columns, *, shelves=None):
             )
 
 
+def _move_port(route, index, port, reach):
+    edge, start, end, path = route
+    replacement = list(path)
+    offset = tuple(
+        new - old for new, old in zip(port["point"], path[0 if index == 0 else -1])
+    )
+    # Keep the endpoint tangent; taper the shift over the approach.
+    for i in range(min(reach, len(path) - 2)):
+        weight = 1 if i <= 1 else 1 - (i - 1) / (reach - 1)
+        position = i if index == 0 else -1 - i
+        replacement[position] = tuple(
+            value + delta * weight for value, delta in zip(path[position], offset)
+        )
+    return (
+        (edge, port, end, replacement)
+        if index == 0
+        else (edge, start, port, replacement)
+    )
+
+
+def _untangle_ports(routes, samples, obstacles, right_limit):
+    """Try swapping slots where two actual approaches cross on a shared side."""
+    groups = defaultdict(list)
+    for i, (edge, start, end, _) in enumerate(routes):
+        groups[edge["source_id"], start["side"]].append((i, 0))
+        groups[edge["target_id"], end["side"]].append((i, 1))
+
+    def alternatives(i, role, port):
+        edge = routes[i][0]
+        margin = edge_obstacles(obstacles, edge["source_id"], edge["target_id"])
+        for reach in (2, 7, 12) if len(routes[i][-1]) > 4 else (2,):
+            route = _move_port(routes[i], role, port, reach)
+            x, y, right, _ = bounds(route[-1])
+            if (
+                x >= 0
+                and y >= 0
+                and right <= right_limit
+                and first_collision(route[-1], margin) is None
+            ):
+                yield route, type(samples[i])(route[-1])
+
+    for group in groups.values():
+        group.sort(key=lambda item: routes[item[0]][item[1] + 1]["fraction"])
+        for index, (i, role_i) in enumerate(group):
+            # Local swaps keep distant connections from jumping across the card.
+            for j, role_j in group[index + 1 : index + 4]:
+                first, second = samples[i], samples[j]
+                if i == j or not first.crosses(second):
+                    continue
+                pending = product(
+                    alternatives(i, role_i, routes[j][role_j + 1]),
+                    alternatives(j, role_j, routes[i][role_i + 1]),
+                )
+                for (a, next_a), (b, next_b) in pending:
+                    if (
+                        next_a.crosses(next_b)
+                        or next_a.length + next_b.length
+                        > (first.length + second.length) * 1.02
+                        or max(next_a.length, next_b.length)
+                        > max(first.length, second.length) * 1.02
+                    ):
+                        continue
+                    changes = sum(
+                        int(next_a.crosses(other))
+                        + int(next_b.crosses(other))
+                        - int(first.crosses(other))
+                        - int(second.crosses(other))
+                        for k, other in enumerate(samples)
+                        if k not in (i, j)
+                    )
+                    if changes <= 0:
+                        routes[i], routes[j] = a, b
+                        samples[i], samples[j] = next_a, next_b
+                        break
+
+
 def route_edges(edges, positions, obstacles, columns, *, shelves=None):
-    """Keep ports and shelves fixed while relaxing crowded paths."""
+    """Improve crossed approaches and detours without moving cards or shelves."""
     from .layout_quality import PathSample
 
     routes = list(
@@ -428,6 +504,7 @@ def route_edges(edges, positions, obstacles, columns, *, shelves=None):
     boxes = sorted(padded(box, CLEARANCE + 3) for box in obstacles.values())
     clear = _obstacle_index(tuple(boxes))
     empty_traffic = {}
+    _untangle_ports(routes, samples, obstacles, right_limit)
     # Strong routes are placed first and get first choice of an unobstructed corridor.
     # The second pass can adapt weaker routes around them without changing ports.
     for index in reversed(range(len(routes))):
@@ -435,9 +512,10 @@ def route_edges(edges, positions, obstacles, columns, *, shelves=None):
         original = samples[index]
         others = samples[:index] + samples[index + 1 :]
         collisions = sum(original.crosses(other) for other in others)
+        a, b = path[0], path[-1]
+        excess_detour = len(path) > 4 and original.length > dist(a, b) * 1.17 + 40
         if not collisions:
             continue
-        a, b = path[0], path[-1]
         step = max(LEAD, min(100, dist(a, b) * 0.4))
         alternatives = [
             [
@@ -486,7 +564,10 @@ def route_edges(edges, positions, obstacles, columns, *, shelves=None):
                 sum(candidate.crosses(other) for other in others),
                 candidate.length,
             )
-            if score[0] >= collisions or score >= best_score:
+            if score >= best_score or (
+                score[0] == collisions
+                and (not excess_detour or score[1] > original.length - 10)
+            ):
                 continue
             if first_collision(alternative, margin) is None:
                 routes[index] = edge, start, end, alternative

@@ -108,6 +108,9 @@ node tests/explorer_browser.cjs /tmp/truth-seeker-browser/map-3.html /tmp/truth-
 
 作品パッケージ、書影、公式ビジュアル、ゲーム画面も対象に含める。年代や仕様の説明であることだけでは `not_suitable` にしない。`images-save` で取得後のファイルと候補をまとめて保存し、`images-status` で未取得・失敗・掲載待ちを確認し、`images-stage` で確認済みの掲載可否に応じて登録する。`render --image-profile local` の個人閲覧用は標準の配布向けフォルダと分かれ、個別に確認した利用条件に従う。[画像収集と出力設定](references/data-contract.md#collecting-images-before-an-embedding-decision)
 
+
+`render_result.json` と `status` の出力別 `image_inventory` で、カタログ経由の画像、直接登録した画像、写真・一次資料・地図・模式図などの内訳を確認できます。QAでは `illustrations.image_inventory` がPDFなどの検証済み掲載数を示します。生成ベクター図表は別計上です。写真QAの `other_images_by_unillustrated_target` は、写真・実物史料が未掲載の対象に掲載した地図や模式図を示します。
+
 ### 調査に使ったモデルとハーネス
 
 ```bash

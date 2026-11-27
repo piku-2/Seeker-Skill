@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from itertools import pairwise
 from pathlib import Path
 
+from .image_inventory import image_inventory
 from .model import LayoutError
 from .routing import cubics
 from .scene import all_text_lines, check_scene, layout
@@ -692,6 +693,7 @@ def _write_result(scene, result, staging, destination, names):
         html_path=str(destination / "map.html"),
         formal_formats=[fmt for fmt in ("pdf", "html", "svg") if f"map.{fmt}" in names],
     )
+    result["image_inventory"] = image_inventory(scene, result["formal_formats"])
     (staging / "render_result.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
     )

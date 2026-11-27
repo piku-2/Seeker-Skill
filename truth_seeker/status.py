@@ -4,6 +4,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
+from .image_inventory import image_inventory
 from .images import catalog_summary, read_catalog
 from .model import load_generation
 from .photos import DOCUMENTARY_TYPES
@@ -59,9 +60,12 @@ def _output_status(base, progress, profile, data):
                 break
     if qa is None and profile != "local":
         qa = _saved_json(qa_root / "illustration-result.json")
-    rasters = (
-        [item for item in scene.get("assets", []) if "bbox" in item] if current else []
+    verified_formats = (
+        result.get("formal_formats", [])
+        if (state == "current_generation" and scene and "render_inputs" in scene)
+        else []
     )
+    inventory = image_inventory(scene, verified_formats) if current else None
     return {
         "state": state,
         "integrity_error": integrity_error,
@@ -74,10 +78,11 @@ def _output_status(base, progress, profile, data):
         else None,
         "published_at": result.get("published_at"),
         "pending_layout": (folder / "scene-pending.json").is_file(),
-        "placed_images": len(rasters) if current else None,
-        "generated_figures": sum("figure_bbox" in a for a in scene.get("assets", []))
-        if current
+        "placed_images": inventory["raster_images_in_scene"] if inventory else None,
+        "generated_figures": inventory["generated_vector_figures"]
+        if inventory
         else None,
+        "image_inventory": inventory,
         "pdf_warning": result.get("pdf_fallback_reason")
         or result.get("pdf_render_error"),
         "qa_matches_published_scene": bool(
@@ -188,6 +193,9 @@ def status(run):
             )
             if data
             else None,
+            "image_catalog": {
+                key: value for key, value in catalog.items() if key != "candidates"
+            },
             "image_candidates": len(candidates) + len(unlinked),
             "acquired_images": acquired,
             "outputs": outputs,
