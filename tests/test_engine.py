@@ -380,6 +380,24 @@ def test_repair_success_and_cas(tmp_path):
     assert target.read_text() == "unexpected modification"
 
 
+def test_repair_rejects_excluded_runtime_paths(tmp_path):
+    for rel in ("foo/../runs/x.txt", "outputs/x.txt", "./cache/x"):
+        with pytest.raises(RepairError, match="excluded runtime path"):
+            proposal(tmp_path, {rel: "changed"}, "should be rejected")
+
+
+def test_repair_apply_rejects_hand_edited_banned_path(tmp_path):
+    target = tmp_path / "file.txt"
+    target.write_text("original")
+    prop = proposal(tmp_path, {"file.txt": "changed"}, "ok")
+    payload = json.loads(prop.read_text(encoding="utf-8"))
+    payload["changes"][0]["path"] = "runs/secret.txt"
+    prop.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RepairError, match="excluded runtime path"):
+        apply(tmp_path, prop, approval=payload["repair_id"])
+    assert target.read_text() == "original"
+
+
 def test_completion_status():
     assert classify(True, True, True, True, "pass") == "complete"
     assert classify(True, True, True, True, "unavailable") == "complete_limited_review"

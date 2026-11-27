@@ -54,13 +54,24 @@ def hash_file(p):
     )
 
 
+def _banned_rel(rel):
+    posix = _posix_rel(rel)
+    return any(
+        posix == prefix.rstrip("/") or posix.startswith(prefix)
+        for prefix in BANNED_PREFIXES
+    )
+
+
 def safe_path(root, relative):
     root = Path(root).resolve()
     p = (root / relative).resolve()
     if p != root and root not in p.parents:
         raise RepairError("outside repository")
-    if ".git" in p.relative_to(root).parts:
+    rel = p.relative_to(root)
+    if ".git" in rel.parts:
         raise RepairError("cannot modify .git")
+    if _banned_rel(rel.as_posix()):
+        raise RepairError("excluded runtime path")
     return p
 
 
@@ -88,8 +99,6 @@ def proposal(root, changes, reason, tests=None):
         p = safe_path(root, rel)
         if p.exists() and not p.is_file():
             raise RepairError("target not regular file")
-        if str(rel).startswith(("runs/", "experience/local/", "repair_backups/")):
-            raise RepairError("excluded runtime path")
         items.append(
             {
                 "path": str(p.relative_to(root)),
@@ -253,7 +262,7 @@ def ignored_runtime_path(rel):
         return True
     if Path(posix).suffix.lower() in {".pyc", ".pyo", ".pyd"}:
         return True
-    return any(posix == prefix.rstrip("/") or posix.startswith(prefix) for prefix in BANNED_PREFIXES)
+    return _banned_rel(posix)
 
 
 def staged_check(root):
